@@ -1,7 +1,17 @@
-import React, { useRef, useEffect, useCallback } from 'react'
+import React, { useRef, useEffect, useState, useCallback } from 'react'
 import type { Stroke, StrokePoint, StrokeTool, EraserMode } from '../../types/drawing'
 import { calculateBounds, renderStroke, getStrokePath2D } from '../../lib/drawing/stroke'
 import { eraseByStroke, eraseByPrecision } from '../../lib/drawing/eraser'
+import { isScribbleStroke, getScribbleEraseTargets } from '../../lib/gesture/scribble'
+import { recognizeShape, type ShapeRecognitionResult } from '../../lib/gesture/shapes'
+import {
+  isClosedLoop,
+  isPointNearContour,
+  findStrokesInLasso,
+  getSelectionBounds,
+  isPointInSelection,
+} from '../../lib/gesture/lasso'
+import { Trash2, X } from 'lucide-react'
 
 export interface DrawingCanvasProps {
   strokes: Stroke[]
@@ -26,7 +36,14 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const staticCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const activeCanvasRef = useRef<HTMLCanvasElement | null>(null)
 
-  // 最新の props を ref で保持（ネイティブイベントリスナーから常に最新値を参照）
+  // なげなわ選択状態
+  const [selectedStrokeIds, setSelectedStrokeIds] = useState<string[]>([])
+  const selectedStrokeIdsRef = useRef<string[]>([])
+  useEffect(() => {
+    selectedStrokeIdsRef.current = selectedStrokeIds
+  }, [selectedStrokeIds])
+
+  // 最新の props を ref で保持
   const propsRef = useRef({
     selectedTool,
     selectedColor,
@@ -57,13 +74,28 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     dpr: 1,
   })
 
+  // ジェスチャー関連の ref
+  // 1. 直前の閉ループストローク（輪郭ホールド判定用）
+  const candidateLoopRef = useRef<{ strokeId: string; points: StrokePoint[] } | null>(null)
+  // 2. 輪郭ホールドタイマー
+  const contourHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const contourHoldAnchorRef = useRef<{ x: number; y: number } | null>(null)
+  // 3. 図形スナップ用ホールドタイマー
+  const shapeHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const shapeHoldAnchorRef = useRef<{ x: number; y: number } | null>(null)
+  const snappedShapeRef = useRef<ShapeRecognitionResult | null>(null)
+  // 4. なげなわ選択中のドラッグ操作
+  const isDraggingSelectionRef = useRef(false)
+  const dragStartPointRef = useRef<{ x: number; y: number } | null>(null)
+  const dragDeltaRef = useRef<{ dx: number; dy: number }>({ dx: 0, dy: 0 })
+
   // 最新の strokes を同期
   useEffect(() => {
     currentStrokesRef.current = strokes
   }, [strokes])
 
   // 確定線 Canvas 全体の再描画
-  const redrawStaticCanvas = useCallback(() => {
+  const redrawStaticCanvas = useCallback((excludeIds: string[] = []) => {
     const staticCanvas = staticCanvasRef.current
     if (!staticCanvas) return
     const ctx = staticCanvas.getContext('2d')
@@ -75,11 +107,13 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     ctx.clearRect(0, 0, width, height)
 
     for (const stroke of currentStrokesRef.current) {
-      renderStroke(ctx, stroke)
+      if (!excludeIds.includes(stroke.id)) {
+        renderStroke(ctx, stroke)
+      }
     }
   }, [])
 
-  // strokes 更新時の再描画
+  // strokes または 選択状態 更新時の再描画
   useEffect(() => {
     redrawStaticCanvas()
   }, [strokes, redrawStaticCanvas])
@@ -121,7 +155,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     [redrawStaticCanvas]
   )
 
-  // ResizeObserver でコンテナサイズを確実に監視
+  // ResizeObserver でコンテナサイズを監視
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
@@ -161,13 +195,105 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     }
   }
 
-  // アクティブストロークのコミット（確定線への転写＆状態追加）
+  // ホールドタイマーのクリア
+  const clearShapeHoldTimer = () => {
+    if (shapeHoldTimerRef.current) {
+      clearTimeout(shapeHoldTimerRef.current)
+      shapeHoldTimerRef.current = null
+    }
+    shapeHoldAnchorRef.current = null
+  }
+
+  const clearContourHoldTimer = () => {
+    if (contourHoldTimerRef.current) {
+      clearTimeout(contourHoldTimerRef.current)
+      contourHoldTimerRef.current = null
+    }
+    contourHoldAnchorRef.current = null
+  }
+
+  // アクティブストロークの描画更新
+  const renderActiveStrokePreview = useCallback(
+    (points: StrokePoint[], isSnapped = false) => {
+      const activeCanvas = activeCanvasRef.current
+      if (!activeCanvas) return
+      const activeCtx = activeCanvas.getContext('2d')
+      if (!activeCtx) return
+
+      const { width, height } = dimensionsRef.current
+      activeCtx.clearRect(0, 0, width, height)
+
+      if (points.length === 0) return
+
+      const { selectedTool: toolName, selectedColor: color, selectedSize: size } = propsRef.current
+      const isHighlighter = toolName === 'highlighter'
+
+      const previewPoints =
+        points.length === 1
+          ? [points[0], { ...points[0], x: points[0].x + 0.1, y: points[0].y + 0.1 }]
+          : points
+
+      const path = getStrokePath2D(previewPoints, size, isHighlighter)
+
+      activeCtx.save()
+      if (isHighlighter) {
+        activeCtx.globalCompositeOperation = 'multiply'
+        activeCtx.globalAlpha = 0.5
+        activeCtx.fillStyle = color
+      } else {
+        activeCtx.globalCompositeOperation = 'source-over'
+        activeCtx.globalAlpha = 1.0
+        activeCtx.fillStyle = color
+      }
+      activeCtx.fill(path)
+
+      // スナップ時の視覚的アクセント（グロー効果）
+      if (isSnapped) {
+        activeCtx.strokeStyle = '#3b82f6'
+        activeCtx.lineWidth = 1.5
+        activeCtx.setLineDash([4, 4])
+        activeCtx.stroke(path)
+      }
+
+      activeCtx.restore()
+    },
+    []
+  )
+
+  // アクティブストロークのコミット
   const commitActiveStroke = useCallback(() => {
+    clearShapeHoldTimer()
+    clearContourHoldTimer()
+
     const points = activePointsRef.current
-    const { selectedTool: toolName, selectedColor: color, selectedSize: size, onAddStroke: addStroke } =
+    const snapped = snappedShapeRef.current
+    const { selectedTool: toolName, selectedColor: color, selectedSize: size, onAddStroke: addStroke, onUpdateStrokes: updateStrokes } =
       propsRef.current
 
-    if (points.length >= 1 && (toolName === 'pen' || toolName === 'highlighter')) {
+    if (snapped) {
+      // スナップ図形が確定された場合
+      let current = currentStrokesRef.current
+      if (snapped.replacedStrokeIds && snapped.replacedStrokeIds.length > 0) {
+        // 日本式「口」などで以前のストロークを置換する場合
+        current = current.filter((s) => !snapped.replacedStrokeIds?.includes(s.id))
+        currentStrokesRef.current = current
+        updateStrokes(current)
+      }
+
+      const tool: StrokeTool = toolName === 'highlighter' ? 'highlighter' : 'pen'
+      const newStroke: Stroke = {
+        id: `stroke-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        tool,
+        color,
+        size,
+        points: snapped.points,
+        bounds: snapped.bounds,
+        createdAt: Date.now(),
+      }
+
+      addStroke(newStroke)
+      snappedShapeRef.current = null
+    } else if (points.length >= 1 && (toolName === 'pen' || toolName === 'highlighter')) {
       const finalPoints =
         points.length === 1
           ? [points[0], { ...points[0], x: points[0].x + 0.1, y: points[0].y + 0.1 }]
@@ -182,6 +308,13 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         points: finalPoints,
         bounds: calculateBounds(finalPoints, size),
         createdAt: Date.now(),
+      }
+
+      // 閉ループか判定（輪郭ホールド選択候補として記録）
+      if (isClosedLoop(finalPoints)) {
+        candidateLoopRef.current = { strokeId: newStroke.id, points: [...finalPoints] }
+      } else {
+        candidateLoopRef.current = null
       }
 
       // 下層の確定 Canvas に直接転写
@@ -211,14 +344,26 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     lastPointRef.current = null
   }, [])
 
+  // 選択中のストロークを削除
+  const handleDeleteSelected = () => {
+    if (selectedStrokeIds.length === 0) return
+    const next = currentStrokesRef.current.filter((s) => !selectedStrokeIds.includes(s.id))
+    currentStrokesRef.current = next
+    propsRef.current.onUpdateStrokes(next)
+    setSelectedStrokeIds([])
+  }
+
+  // 選択解除
+  const handleClearSelection = () => {
+    setSelectedStrokeIds([])
+  }
+
   // --- ネイティブイベントリスナーの登録 ---
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
 
-    // 1. iOS Safari のダブルタップズームや長押しメニューを完全に防止するための非 passive touch リスナー
     const handleTouchPrevent = (e: TouchEvent) => {
-      // 描画面上でのブラウザ規定動作（ダブルタップ拡大、スクロール、長押しメニュー等）を確実に遮断
       if (e.cancelable) {
         e.preventDefault()
       }
@@ -239,22 +384,15 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     container.addEventListener('contextmenu', handleContextMenu)
     container.addEventListener('dblclick', handleDblClick)
 
-    // 2. ネイティブ Pointer イベントハンドラ
+    // ポインタ押下イベント
     const handleNativePointerDown = (e: PointerEvent) => {
-      const { selectedTool: toolName, selectedColor: color, selectedSize: size, eraserMode: eMode, onUpdateStrokes: updateStrokes } =
-        propsRef.current
-
-      if (toolName === 'lasso') return
+      const { selectedTool: toolName, eraserMode: eMode, onUpdateStrokes: updateStrokes } = propsRef.current
 
       if (e.cancelable) {
         e.preventDefault()
       }
 
-      // 前のストロークが未確定であれば先に確定する（素早い連続ストローク対応）
-      if (isDrawingRef.current && activePointsRef.current.length > 0) {
-        commitActiveStroke()
-      }
-
+      const pt = getCanvasPointFromCoords(e.clientX, e.clientY, e.pressure)
       activePointerIdRef.current = e.pointerId
       isDrawingRef.current = true
 
@@ -264,37 +402,72 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         // noop
       }
 
-      const pt = getCanvasPointFromCoords(e.clientX, e.clientY, e.pressure)
+      // A. なげなわ選択中の場合: ドラッグ判定または選択解除
+      const currentSelectedIds = selectedStrokeIdsRef.current
+      if (currentSelectedIds.length > 0) {
+        const selectedStrokes = currentStrokesRef.current.filter((s) =>
+          currentSelectedIds.includes(s.id)
+        )
+        const selBounds = getSelectionBounds(selectedStrokes)
+
+        // 枠線だけでなく、選択オブジェクトの全体または選択領域内であればドラッグ可能
+        if (isPointInSelection(pt, selectedStrokes, selBounds)) {
+          isDraggingSelectionRef.current = true
+          dragStartPointRef.current = pt
+          dragDeltaRef.current = { dx: 0, dy: 0 }
+          return
+        } else {
+          // 選択領域外タップで選択解除
+          setSelectedStrokeIds([])
+          // そのまま通常の描画へ
+        }
+      }
+
+      // B. 丸囲み輪郭ホールド選択の判定
+      if (candidateLoopRef.current && (toolName === 'pen' || toolName === 'highlighter')) {
+        const loop = candidateLoopRef.current
+        if (isPointNearContour(pt, loop.points, 25)) {
+          // 輪郭近傍でペンダウン -> ホールドタイマー（350ms）開始
+          contourHoldAnchorRef.current = { x: pt.x, y: pt.y }
+          contourHoldTimerRef.current = setTimeout(() => {
+            // ホールド成功！ 閉ループストロークを削除し、囲まれたストロークを選択
+            const remaining = currentStrokesRef.current.filter((s) => s.id !== loop.strokeId)
+            currentStrokesRef.current = remaining
+            updateStrokes(remaining)
+
+            const enclosed = findStrokesInLasso(remaining, loop.points)
+            if (enclosed.length > 0) {
+              const ids = enclosed.map((s) => s.id)
+              setSelectedStrokeIds(ids)
+              // 即座にドラッグモードへ
+              isDraggingSelectionRef.current = true
+              dragStartPointRef.current = pt
+              dragDeltaRef.current = { dx: 0, dy: 0 }
+            }
+
+            candidateLoopRef.current = null
+            activePointsRef.current = []
+            renderActiveStrokePreview([])
+          }, 350)
+        }
+      }
+
+      // 前のストロークが未確定であれば確定
+      if (activePointsRef.current.length > 0) {
+        commitActiveStroke()
+      }
+
       lastPointRef.current = pt
+      snappedShapeRef.current = null
 
       if (toolName === 'pen' || toolName === 'highlighter') {
         activePointsRef.current = [pt]
+        renderActiveStrokePreview([pt])
 
-        // タップ時にも即座に点（ドット）を可視化
-        const activeCanvas = activeCanvasRef.current
-        if (activeCanvas) {
-          const activeCtx = activeCanvas.getContext('2d')
-          if (activeCtx) {
-            const { width, height } = dimensionsRef.current
-            activeCtx.clearRect(0, 0, width, height)
-            const isHighlighter = toolName === 'highlighter'
-            const previewPoints = [pt, { ...pt, x: pt.x + 0.1, y: pt.y + 0.1 }]
-            const path = getStrokePath2D(previewPoints, size, isHighlighter)
-
-            activeCtx.save()
-            if (isHighlighter) {
-              activeCtx.globalCompositeOperation = 'multiply'
-              activeCtx.globalAlpha = 0.5
-              activeCtx.fillStyle = color
-            } else {
-              activeCtx.globalCompositeOperation = 'source-over'
-              activeCtx.globalAlpha = 1.0
-              activeCtx.fillStyle = color
-            }
-            activeCtx.fill(path)
-            activeCtx.restore()
-          }
-        }
+        // 図形認識ホールドタイマーの開始準備
+        shapeHoldAnchorRef.current = { x: pt.x, y: pt.y }
+      } else if (toolName === 'lasso') {
+        activePointsRef.current = [pt]
       } else if (toolName === 'eraser') {
         if (eMode === 'stroke') {
           const next = eraseByStroke(currentStrokesRef.current, pt, pt, 20)
@@ -312,14 +485,14 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       }
     }
 
+    // ポインタ移動イベント
     const handleNativePointerMove = (e: PointerEvent) => {
       if (!isDrawingRef.current || activePointerIdRef.current !== e.pointerId) return
       if (e.cancelable) {
         e.preventDefault()
       }
 
-      const { selectedTool: toolName, selectedColor: color, selectedSize: size, eraserMode: eMode, onUpdateStrokes: updateStrokes } =
-        propsRef.current
+      const { selectedTool: toolName, eraserMode: eMode, onUpdateStrokes: updateStrokes } = propsRef.current
 
       const coalesced = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : []
       const pointsList: StrokePoint[] =
@@ -327,35 +500,140 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
           ? coalesced.map((ev) => getCanvasPointFromCoords(ev.clientX, ev.clientY, ev.pressure))
           : [getCanvasPointFromCoords(e.clientX, e.clientY, e.pressure)]
 
+      const latestPt = pointsList[pointsList.length - 1]
+
+      // A. なげなわ選択ストロークのドラッグ移動中
+      if (isDraggingSelectionRef.current && dragStartPointRef.current) {
+        const dx = latestPt.x - dragStartPointRef.current.x
+        const dy = latestPt.y - dragStartPointRef.current.y
+        dragDeltaRef.current = { dx, dy }
+
+        // 移動中のプレビューを描画
+        const activeCanvas = activeCanvasRef.current
+        if (activeCanvas) {
+          const activeCtx = activeCanvas.getContext('2d')
+          if (activeCtx) {
+            const { width, height } = dimensionsRef.current
+            activeCtx.clearRect(0, 0, width, height)
+
+            const currentSelectedIds = selectedStrokeIdsRef.current
+            const selected = currentStrokesRef.current.filter((s) =>
+              currentSelectedIds.includes(s.id)
+            )
+
+            // 静的Canvasから選択中ストロークを除いて再描画
+            redrawStaticCanvas(currentSelectedIds)
+
+            // アクティブCanvasにオフセット適用して描画
+            activeCtx.save()
+            activeCtx.translate(dx, dy)
+            for (const s of selected) {
+              renderStroke(activeCtx, s)
+            }
+            activeCtx.restore()
+          }
+        }
+        return
+      }
+
+      // B. 輪郭ホールドの監視（半径 10px を超えたらキャンセル）
+      if (contourHoldAnchorRef.current) {
+        const d = Math.hypot(
+          latestPt.x - contourHoldAnchorRef.current.x,
+          latestPt.y - contourHoldAnchorRef.current.y
+        )
+        if (d > 12) {
+          clearContourHoldTimer()
+        }
+      }
+
+      // C. なげなわツールによる手動囲み
+      if (toolName === 'lasso') {
+        for (const pt of pointsList) {
+          activePointsRef.current.push(pt)
+        }
+
+        const activeCanvas = activeCanvasRef.current
+        if (activeCanvas) {
+          const activeCtx = activeCanvas.getContext('2d')
+          if (activeCtx) {
+            const { width, height } = dimensionsRef.current
+            activeCtx.clearRect(0, 0, width, height)
+
+            const pts = activePointsRef.current
+            if (pts.length > 1) {
+              activeCtx.save()
+              activeCtx.strokeStyle = '#3b82f6'
+              activeCtx.lineWidth = 2
+              activeCtx.setLineDash([6, 6])
+              activeCtx.beginPath()
+              activeCtx.moveTo(pts[0].x, pts[0].y)
+              for (let i = 1; i < pts.length; i++) {
+                activeCtx.lineTo(pts[i].x, pts[i].y)
+              }
+              activeCtx.stroke()
+              activeCtx.restore()
+            }
+          }
+        }
+        return
+      }
+
+      // D. ペン・蛍光ペン描画
       if (toolName === 'pen' || toolName === 'highlighter') {
         for (const pt of pointsList) {
           activePointsRef.current.push(pt)
           lastPointRef.current = pt
         }
 
-        const activeCanvas = activeCanvasRef.current
-        if (!activeCanvas) return
-        const activeCtx = activeCanvas.getContext('2d')
-        if (!activeCtx) return
-
-        const { width, height } = dimensionsRef.current
-        activeCtx.clearRect(0, 0, width, height)
-
-        const isHighlighter = toolName === 'highlighter'
-        const path = getStrokePath2D(activePointsRef.current, size, isHighlighter)
-
-        activeCtx.save()
-        if (isHighlighter) {
-          activeCtx.globalCompositeOperation = 'multiply'
-          activeCtx.globalAlpha = 0.5
-          activeCtx.fillStyle = color
-        } else {
-          activeCtx.globalCompositeOperation = 'source-over'
-          activeCtx.globalAlpha = 1.0
-          activeCtx.fillStyle = color
+        // 図形スナップがすでに適用されていない場合、通常プレビューを描画
+        if (!snappedShapeRef.current) {
+          renderActiveStrokePreview(activePointsRef.current)
         }
-        activeCtx.fill(path)
-        activeCtx.restore()
+
+        // 図形ホールドタイマー（400ms）の監視と更新
+        if (shapeHoldAnchorRef.current) {
+          const distFromAnchor = Math.hypot(
+            latestPt.x - shapeHoldAnchorRef.current.x,
+            latestPt.y - shapeHoldAnchorRef.current.y
+          )
+
+          // 8px 以上動いたらホールドの基準点をリセットしてタイマー再始動
+          if (distFromAnchor > 8) {
+            shapeHoldAnchorRef.current = { x: latestPt.x, y: latestPt.y }
+            clearShapeHoldTimer()
+            shapeHoldTimerRef.current = setTimeout(() => {
+              // 400ms 静止ホールド -> 図形認識を実行！
+              const recognized = recognizeShape(
+                activePointsRef.current,
+                currentStrokesRef.current
+              )
+              if (recognized) {
+                snappedShapeRef.current = recognized
+                // もし置換対象ストロークがあれば静的Canvasから一時除外
+                if (recognized.replacedStrokeIds) {
+                  redrawStaticCanvas(recognized.replacedStrokeIds)
+                }
+                renderActiveStrokePreview(recognized.points, true)
+              }
+            }, 400)
+          } else if (!shapeHoldTimerRef.current && !snappedShapeRef.current) {
+            // 微小移動の範囲内ならタイマー開始
+            shapeHoldTimerRef.current = setTimeout(() => {
+              const recognized = recognizeShape(
+                activePointsRef.current,
+                currentStrokesRef.current
+              )
+              if (recognized) {
+                snappedShapeRef.current = recognized
+                if (recognized.replacedStrokeIds) {
+                  redrawStaticCanvas(recognized.replacedStrokeIds)
+                }
+                renderActiveStrokePreview(recognized.points, true)
+              }
+            }, 400)
+          }
+        }
       } else if (toolName === 'eraser') {
         let updated = false
         let current = currentStrokesRef.current
@@ -386,10 +664,14 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       }
     }
 
+    // ポインタ離脱イベント
     const handleNativePointerEnd = (e: PointerEvent) => {
       if (!isDrawingRef.current || activePointerIdRef.current !== e.pointerId) return
       isDrawingRef.current = false
       activePointerIdRef.current = null
+
+      clearShapeHoldTimer()
+      clearContourHoldTimer()
 
       if (e.cancelable) {
         e.preventDefault()
@@ -401,7 +683,98 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         // noop
       }
 
-      // ストロークを確定
+      const { onUpdateStrokes: updateStrokes } = propsRef.current
+
+      // A. なげなわ選択ストロークのドラッグ移動完了
+      if (isDraggingSelectionRef.current) {
+        isDraggingSelectionRef.current = false
+        const { dx, dy } = dragDeltaRef.current
+        dragStartPointRef.current = null
+        dragDeltaRef.current = { dx: 0, dy: 0 }
+
+        if (dx !== 0 || dy !== 0) {
+          const currentSelectedIds = selectedStrokeIdsRef.current
+          const next = currentStrokesRef.current.map((s) => {
+            if (!currentSelectedIds.includes(s.id)) return s
+            const movedPoints = s.points.map((p) => ({
+              ...p,
+              x: p.x + dx,
+              y: p.y + dy,
+            }))
+            return {
+              ...s,
+              points: movedPoints,
+              bounds: calculateBounds(movedPoints, s.size),
+            }
+          })
+          currentStrokesRef.current = next
+          updateStrokes(next)
+        }
+
+        // アクティブCanvasをクリア
+        const activeCanvas = activeCanvasRef.current
+        if (activeCanvas) {
+          const activeCtx = activeCanvas.getContext('2d')
+          if (activeCtx) {
+            const { width, height } = dimensionsRef.current
+            activeCtx.clearRect(0, 0, width, height)
+          }
+        }
+        redrawStaticCanvas()
+        return
+      }
+
+      // B. ツールバーのなげなわ選択ツールでの囲み完了
+      if (propsRef.current.selectedTool === 'lasso') {
+        const activePts = activePointsRef.current
+        if (activePts.length > 5) {
+          const enclosed = findStrokesInLasso(currentStrokesRef.current, activePts)
+          if (enclosed.length > 0) {
+            setSelectedStrokeIds(enclosed.map((s) => s.id))
+          }
+        }
+
+        const activeCanvas = activeCanvasRef.current
+        if (activeCanvas) {
+          const activeCtx = activeCanvas.getContext('2d')
+          if (activeCtx) {
+            const { width, height } = dimensionsRef.current
+            activeCtx.clearRect(0, 0, width, height)
+          }
+        }
+        activePointsRef.current = []
+        return
+      }
+
+      // C. スクラブ消去判定（ぐちゃぐちゃ描いて消す）
+      const activePts = activePointsRef.current
+      if (!snappedShapeRef.current && isScribbleStroke(activePts)) {
+        // スクラブ確定！ アクティブCanvasを即座に破棄
+        const activeCanvas = activeCanvasRef.current
+        if (activeCanvas) {
+          const activeCtx = activeCanvas.getContext('2d')
+          if (activeCtx) {
+            const { width, height } = dimensionsRef.current
+            activeCtx.clearRect(0, 0, width, height)
+          }
+        }
+        activePointsRef.current = []
+        lastPointRef.current = null
+
+        // 交差・接触するストロークを削除
+        const eraseTargetIds = getScribbleEraseTargets(currentStrokesRef.current, activePts)
+        if (eraseTargetIds.length > 0) {
+          const remaining = currentStrokesRef.current.filter(
+            (s) => !eraseTargetIds.includes(s.id)
+          )
+          currentStrokesRef.current = remaining
+          updateStrokes(remaining)
+        }
+        candidateLoopRef.current = null
+        return
+      }
+
+      // 通常または図形スナップのコミット
       commitActiveStroke()
     }
 
@@ -411,6 +784,9 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     container.addEventListener('pointercancel', handleNativePointerEnd, { passive: false })
 
     return () => {
+      clearShapeHoldTimer()
+      clearContourHoldTimer()
+
       container.removeEventListener('touchstart', handleTouchPrevent)
       container.removeEventListener('touchmove', handleTouchPrevent)
       container.removeEventListener('touchend', handleTouchPrevent)
@@ -423,7 +799,11 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       container.removeEventListener('pointerup', handleNativePointerEnd)
       container.removeEventListener('pointercancel', handleNativePointerEnd)
     }
-  }, [commitActiveStroke])
+  }, [commitActiveStroke, redrawStaticCanvas, renderActiveStrokePreview])
+
+  // なげなわ選択状態のバウンディングボックス計算
+  const selectedStrokes = strokes.filter((s) => selectedStrokeIds.includes(s.id))
+  const selectionBounds = getSelectionBounds(selectedStrokes)
 
   return (
     <div
@@ -442,6 +822,45 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         ref={activeCanvasRef}
         className="absolute inset-0 block pointer-events-none"
       />
+
+      {/* なげなわ選択オーバーレイ UI */}
+      {selectionBounds && selectedStrokeIds.length > 0 && (
+        <div
+          className="absolute border-2 border-dashed border-blue-500 rounded pointer-events-none transition-all duration-75"
+          style={{
+            left: `${selectionBounds.minX}px`,
+            top: `${selectionBounds.minY}px`,
+            width: `${selectionBounds.maxX - selectionBounds.minX}px`,
+            height: `${selectionBounds.maxY - selectionBounds.minY}px`,
+            backgroundColor: 'rgba(59, 130, 246, 0.08)',
+          }}
+        >
+          {/* アクションバー（削除 & 解除ボタン） */}
+          <div
+            className="absolute -top-10 left-0 flex items-center gap-1 bg-white shadow-lg border border-slate-200 rounded-lg px-2 py-1 pointer-events-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={handleDeleteSelected}
+              className="flex items-center gap-1 text-xs font-medium text-red-600 hover:bg-red-50 px-2 py-1 rounded transition-colors"
+              title="削除"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>削除</span>
+            </button>
+            <div className="w-[1px] h-3 bg-slate-200" />
+            <button
+              type="button"
+              onClick={handleClearSelection}
+              className="flex items-center text-slate-500 hover:bg-slate-100 p-1 rounded transition-colors"
+              title="選択解除"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
