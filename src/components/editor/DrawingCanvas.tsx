@@ -10,7 +10,7 @@ import {
 import { predictNextPoint } from '../../lib/drawing/prediction'
 import { eraseByStroke, eraseByPrecision } from '../../lib/drawing/eraser'
 import { isScribbleStroke, getScribbleEraseTargets } from '../../lib/gesture/scribble'
-import { recognizeShape, type ShapeRecognitionResult } from '../../lib/gesture/shapes'
+import { recognizeShape, type ShapeRecognitionResult, transformSnappedShape } from '../../lib/gesture/shapes'
 import {
   isClosedLoop,
   isPointNearContour,
@@ -154,6 +154,10 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const shapeHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const shapeHoldAnchorRef = useRef<{ x: number; y: number } | null>(null)
   const snappedShapeRef = useRef<ShapeRecognitionResult | null>(null)
+  const snappedShapeInitialRef = useRef<{
+    shape: ShapeRecognitionResult
+    initialPointer: { x: number; y: number }
+  } | null>(null)
   // 4. なげなわ選択中のドラッグ操作
   const isDraggingSelectionRef = useRef(false)
   const dragStartPointRef = useRef<{ x: number; y: number } | null>(null)
@@ -378,6 +382,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
       addStroke(newStroke)
       snappedShapeRef.current = null
+      snappedShapeInitialRef.current = null
     } else if (points.length >= 1 && (toolName === 'pen' || toolName === 'highlighter')) {
       const tool: StrokeTool = toolName === 'highlighter' ? 'highlighter' : 'pen'
       const newStroke: Stroke = {
@@ -719,7 +724,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             activePointsRef.current = []
             clearActiveCanvas()
             clearPredictiveCanvas()
-          }, 350)
+          }, 750)
         }
       }
 
@@ -729,6 +734,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       }
 
       snappedShapeRef.current = null
+      snappedShapeInitialRef.current = null
       clearActiveCanvas()
       clearPredictiveCanvas()
 
@@ -859,11 +865,25 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
       // D. ペン・蛍光ペンの超高速差分追記描画 (O(1)) ＋ ペン先予測
       if (toolName === 'pen' || toolName === 'highlighter') {
+        const latestPt = pointsList[pointsList.length - 1]
+
+        // 1. スナップ図形が既に存在する場合: ペン先ドラッグによる動的リサイズ・変形
+        if (snappedShapeRef.current && snappedShapeInitialRef.current) {
+          const transformed = transformSnappedShape(
+            snappedShapeInitialRef.current.shape,
+            latestPt,
+            snappedShapeInitialRef.current.initialPointer
+          )
+          snappedShapeRef.current = transformed
+          renderSnappedShapePreview(transformed)
+          return
+        }
+
         const activeCanvas = activeCanvasRef.current
         const activeCtx = activeCanvas?.getContext('2d')
         const isHighlighter = toolName === 'highlighter'
 
-        // 1. 各点を差分追記（clearRectなし！過去点への再計算なし！）
+        // 2. 各点を差分追記（clearRectなし！過去点への再計算なし！）
         if (activeCtx) {
           for (const pt of pointsList) {
             const prev = lastDrawnPointRef.current || pt
@@ -873,7 +893,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
           }
         }
 
-        // 2. ペン先予測インクの描画（最上層の predictiveCanvas に先端セグメントのみ瞬時に描画）
+        // 3. ペン先予測インクの描画（最上層の predictiveCanvas に先端セグメントのみ瞬時に描画）
         const predictiveCanvas = predictiveCanvasRef.current
         if (predictiveCanvas && !snappedShapeRef.current) {
           const predCtx = predictiveCanvas.getContext('2d')
@@ -895,43 +915,45 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
           }
         }
 
-        // 3. 図形ホールドタイマー（400ms）の監視
-        if (shapeHoldAnchorRef.current) {
+        // 4. 図形ホールドタイマー（終点で静止している時間のみを正確に計測）
+        // 手ブレ（14px以内）を超える移動がある間は描画中とみなしタイマーをリセット
+        // ペン先が終点で静止してから 750ms 経過した時点で図形認識を発火する
+        if (!snappedShapeRef.current) {
+          if (!shapeHoldAnchorRef.current) {
+            shapeHoldAnchorRef.current = { x: latestPt.x, y: latestPt.y }
+          }
+
           const distFromAnchor = Math.hypot(
             latestPt.x - shapeHoldAnchorRef.current.x,
             latestPt.y - shapeHoldAnchorRef.current.y
           )
 
-          if (distFromAnchor > 8) {
+          // 手ブレ許容値（14px）を超えて移動している間は描画中とみなし、タイマーをリセット
+          if (distFromAnchor > 14) {
             shapeHoldAnchorRef.current = { x: latestPt.x, y: latestPt.y }
             clearShapeHoldTimer()
+          }
+
+          // 静止状態であり、かつタイマーが走っていなければ 750ms 静止計測を開始
+          if (!shapeHoldTimerRef.current) {
             shapeHoldTimerRef.current = setTimeout(() => {
+              // 終点でペン先が静止し続けた場合のみ図形認識を発火
               const recognized = recognizeShape(
                 activePointsRef.current,
                 currentStrokesRef.current
               )
               if (recognized) {
                 snappedShapeRef.current = recognized
+                snappedShapeInitialRef.current = {
+                  shape: recognized,
+                  initialPointer: { x: latestPt.x, y: latestPt.y },
+                }
                 if (recognized.replacedStrokeIds) {
                   redrawStaticCanvas(recognized.replacedStrokeIds)
                 }
                 renderSnappedShapePreview(recognized)
               }
-            }, 400)
-          } else if (!shapeHoldTimerRef.current && !snappedShapeRef.current) {
-            shapeHoldTimerRef.current = setTimeout(() => {
-              const recognized = recognizeShape(
-                activePointsRef.current,
-                currentStrokesRef.current
-              )
-              if (recognized) {
-                snappedShapeRef.current = recognized
-                if (recognized.replacedStrokeIds) {
-                  redrawStaticCanvas(recognized.replacedStrokeIds)
-                }
-                renderSnappedShapePreview(recognized)
-              }
-            }, 400)
+            }, 750)
           }
         }
       } else if (toolName === 'eraser') {

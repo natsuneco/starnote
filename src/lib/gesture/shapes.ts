@@ -38,7 +38,8 @@ function distToSegment(
 /**
  * 直線認識
  */
-function tryRecognizeLine(points: StrokePoint[], defaultPressure: number): ShapeRecognitionResult | null {
+function tryRecognizeLine(rawPoints: StrokePoint[], defaultPressure: number): ShapeRecognitionResult | null {
+  const points = deduplicatePoints(rawPoints, 2.5)
   if (points.length < 5) return null
 
   const start = points[0]
@@ -83,47 +84,96 @@ function tryRecognizeLine(points: StrokePoint[], defaultPressure: number): Shape
 }
 
 /**
- * 正円・楕円認識
+ * 連続する近接点・静止滞留点を除去し、幾何形状認識のバイアスを排除する
  */
-function tryRecognizeCircle(points: StrokePoint[], defaultPressure: number): ShapeRecognitionResult | null {
+export function deduplicatePoints(points: StrokePoint[], minDistance = 2.5): StrokePoint[] {
+  if (points.length < 2) return points
+  const result: StrokePoint[] = [points[0]]
+  for (let i = 1; i < points.length; i++) {
+    if (dist(points[i], result[result.length - 1]) >= minDistance) {
+      result.push(points[i])
+    }
+  }
+  return result
+}
+
+/**
+ * 正円・楕円認識
+ * 
+ * 終点ホールドによる滞留点の影響を受けないよう、外接矩形中心と累積回転角を用いて判定
+ */
+function tryRecognizeCircle(rawPoints: StrokePoint[], defaultPressure: number): ShapeRecognitionResult | null {
+  const points = deduplicatePoints(rawPoints, 2.5)
   if (points.length < 10) return null
 
-  const start = points[0]
-  const end = points[points.length - 1]
-  const closureDist = dist(start, end)
-
-  // 閉ループか判定（始点と終点の距離が一定以内）
-  let totalPathLength = 0
-  for (let i = 1; i < points.length; i++) {
-    totalPathLength += dist(points[i - 1], points[i])
+  // バウンディングボックスを算出
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const p of points) {
+    if (p.x < minX) minX = p.x
+    if (p.y < minY) minY = p.y
+    if (p.x > maxX) maxX = p.x
+    if (p.y > maxY) maxY = p.y
   }
 
-  // ループが概ね閉じているか（全体の18%以内、または45px以内）
-  if (closureDist > Math.max(45, totalPathLength * 0.2)) {
+  const w = maxX - minX
+  const h = maxY - minY
+  if (w < 20 || h < 20) return null
+
+  // 極端に細長い形状は円ではない（アスペクト比 0.55 〜 1.80）
+  const ratio = w / h
+  if (ratio < 0.55 || ratio > 1.8) return null
+
+  // 4隅すべてにストロークが到達している場合は長方形に譲る
+  const cornerThreshold = Math.max(12, Math.min(w, h) * 0.15)
+  let hasTL = false
+  let hasTR = false
+  let hasBR = false
+  let hasBL = false
+  for (const p of points) {
+    if (dist(p, { x: minX, y: minY }) <= cornerThreshold) hasTL = true
+    if (dist(p, { x: maxX, y: minY }) <= cornerThreshold) hasTR = true
+    if (dist(p, { x: maxX, y: maxY }) <= cornerThreshold) hasBR = true
+    if (dist(p, { x: minX, y: maxY }) <= cornerThreshold) hasBL = true
+  }
+  if (hasTL && hasTR && hasBR && hasBL) {
     return null
   }
 
-  // 重心を算出
-  let sumX = 0
-  let sumY = 0
-  for (const p of points) {
-    sumX += p.x
-    sumY += p.y
-  }
-  const cx = sumX / points.length
-  const cy = sumY / points.length
+  // 中心座標（外接矩形の中心を用いることで、終点でホールド待機した点の偏りを完全排除）
+  const cx = (minX + maxX) / 2
+  const cy = (minY + maxY) / 2
 
-  // 重心からの距離の平均と標準偏差を計算
+  // 中心周りの累積回転角を計算（円周に沿って1周ぐるっと回っているかを検証）
+  let totalAngle = 0
+  let prevAngle = Math.atan2(points[0].y - cy, points[0].x - cx)
+  for (let i = 1; i < points.length; i++) {
+    const curAngle = Math.atan2(points[i].y - cy, points[i].x - cx)
+    let delta = curAngle - prevAngle
+    while (delta > Math.PI) delta -= 2 * Math.PI
+    while (delta < -Math.PI) delta += 2 * Math.PI
+    totalAngle += delta
+    prevAngle = curAngle
+  }
+  const absAngle = Math.abs(totalAngle)
+  // 260度（1.44π）〜540度（3.0π）の回転（適度なアンダーシュートやオーバーラップを許容）
+  if (absAngle < Math.PI * 1.44 || absAngle > Math.PI * 3.2) {
+    return null
+  }
+
+  // 中心からの各点への距離の平均と標準偏差を計算
   const distances = points.map((p) => dist(p, { x: cx, y: cy }))
   const avgRadius = distances.reduce((a, b) => a + b, 0) / distances.length
-  if (avgRadius < 15) return null
+  if (avgRadius < 12) return null
 
   const variance =
     distances.reduce((acc, d) => acc + (d - avgRadius) ** 2, 0) / distances.length
   const stdDev = Math.sqrt(variance)
 
-  // 変動係数（CV = stdDev / avgRadius）が小さければ正円（手書きのゆらぎを許容）
-  if (stdDev / avgRadius < 0.16) {
+  // 変動係数（CV = stdDev / avgRadius）が小さければ正円（手書きの自然なゆらぎを十分に許容）
+  if (stdDev / avgRadius < 0.28) {
     // 36分割の綺麗な円ポイント列を生成
     const fittedPoints: StrokePoint[] = []
     const segments = 36
@@ -150,10 +200,11 @@ function tryRecognizeCircle(points: StrokePoint[], defaultPressure: number): Sha
  * 一筆書き長方形の認識
  */
 function tryRecognizeSingleStrokeRectangle(
-  points: StrokePoint[],
+  rawPoints: StrokePoint[],
   defaultPressure: number
 ): ShapeRecognitionResult | null {
-  if (points.length < 12) return null
+  const points = deduplicatePoints(rawPoints, 2.5)
+  if (points.length < 10) return null
 
   const start = points[0]
   const end = points[points.length - 1]
@@ -177,7 +228,8 @@ function tryRecognizeSingleStrokeRectangle(
   if (w < 20 || h < 20) return null
 
   // 4つの角（左上、右上、右下、左下）の近傍に点が到達しているか確認
-  const cornerThreshold = Math.max(16, Math.min(w, h) * 0.35)
+  // 円の場合は幾何学的に角から 0.207 * min(w, h) 離れているため、0.15 以下に設定することで円の誤認識を確実に排除
+  const cornerThreshold = Math.max(12, Math.min(w, h) * 0.15)
   let hasTopLeft = false
   let hasTopRight = false
   let hasBottomRight = false
@@ -197,7 +249,7 @@ function tryRecognizeSingleStrokeRectangle(
 
   // 各点がバウンディングボックスの4辺のいずれかに近いかを評価
   let onPerimeterCount = 0
-  const threshold = Math.max(12, Math.min(w, h) * 0.22)
+  const threshold = Math.max(10, Math.min(w, h) * 0.13)
 
   for (const p of points) {
     const dLeft = Math.abs(p.x - minX)
@@ -321,6 +373,110 @@ function tryRecognizeKanjiBox(
     bounds: calculateBounds(fittedPoints, 10),
     replacedStrokeIds: [s1.id, s2.id],
   }
+}
+
+/**
+ * スナップ後のペン先ドラッグ座標に応じて図形（直線、円、四角形）を変形・リサイズする
+ */
+export function transformSnappedShape(
+  shape: ShapeRecognitionResult,
+  currentPoint: { x: number; y: number },
+  initialPointer: { x: number; y: number }
+): ShapeRecognitionResult {
+  const defaultPressure = shape.points[0]?.pressure || 0.5
+
+  if (shape.type === 'line') {
+    // 直線: 始点を固定し、終点を現在ドラッグ座標に合わせて伸縮・回転
+    const start = shape.points[0]
+    const end = { x: currentPoint.x, y: currentPoint.y }
+    const lineLength = Math.hypot(end.x - start.x, end.y - start.y)
+
+    const steps = Math.max(6, Math.min(24, Math.floor(Math.max(lineLength, 15) / 15)))
+    const fittedPoints: StrokePoint[] = []
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps
+      fittedPoints.push({
+        x: start.x + t * (end.x - start.x),
+        y: start.y + t * (end.y - start.y),
+        pressure: defaultPressure,
+      })
+    }
+
+    return {
+      type: 'line',
+      points: fittedPoints,
+      bounds: calculateBounds(fittedPoints, 10),
+    }
+  }
+
+  if (shape.type === 'circle') {
+    // 円: スナップ時の中心点を保持し、ペン先と中心の距離に応じて半径を動的リサイズ
+    let sumX = 0
+    let sumY = 0
+    for (const p of shape.points) {
+      sumX += p.x
+      sumY += p.y
+    }
+    const cx = sumX / shape.points.length
+    const cy = sumY / shape.points.length
+    const newRadius = Math.max(8, Math.hypot(currentPoint.x - cx, currentPoint.y - cy))
+
+    const segments = 36
+    const fittedPoints: StrokePoint[] = []
+    for (let i = 0; i <= segments; i++) {
+      const theta = (i / segments) * Math.PI * 2
+      fittedPoints.push({
+        x: cx + newRadius * Math.cos(theta),
+        y: cy + newRadius * Math.sin(theta),
+        pressure: defaultPressure,
+      })
+    }
+
+    return {
+      type: 'circle',
+      points: fittedPoints,
+      bounds: calculateBounds(fittedPoints, 10),
+    }
+  }
+
+  if (shape.type === 'rectangle' || shape.type === 'kanji-box') {
+    // 四角形: スナップ発生時のペン位置に対向する角を固定アンカーとしてリサイズ
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    for (const p of shape.points) {
+      if (p.x < minX) minX = p.x
+      if (p.y < minY) minY = p.y
+      if (p.x > maxX) maxX = p.x
+      if (p.y > maxY) maxY = p.y
+    }
+
+    const anchorX = initialPointer.x >= (minX + maxX) / 2 ? minX : maxX
+    const anchorY = initialPointer.y >= (minY + maxY) / 2 ? minY : maxY
+
+    const newMinX = Math.min(anchorX, currentPoint.x)
+    const newMaxX = Math.max(anchorX, currentPoint.x)
+    const newMinY = Math.min(anchorY, currentPoint.y)
+    const newMaxY = Math.max(anchorY, currentPoint.y)
+
+    const fittedPoints: StrokePoint[] = [
+      { x: newMinX, y: newMinY, pressure: defaultPressure },
+      { x: newMaxX, y: newMinY, pressure: defaultPressure },
+      { x: newMaxX, y: newMaxY, pressure: defaultPressure },
+      { x: newMinX, y: newMaxY, pressure: defaultPressure },
+      { x: newMinX, y: newMinY, pressure: defaultPressure },
+    ]
+
+    return {
+      type: shape.type,
+      points: fittedPoints,
+      bounds: calculateBounds(fittedPoints, 10),
+      replacedStrokeIds: shape.replacedStrokeIds,
+    }
+  }
+
+  return shape
 }
 
 /**
