@@ -1,0 +1,26 @@
+schema: spec-driven
+
+context: |
+  Write all OpenSpec artifacts (proposal.md, specs/**/*.md, design.md, tasks.md) in Japanese.
+  OpenSpecのすべてのアーティファクト（提案、仕様、設計、タスクなど）は日本語で記述してください。
+
+  【プロジェクト概要: StarNote】
+  - iPad Safari（PWAスタンドアロン）で軽快に動作するGoodNotes/Collanoteライクな手書きノートWebアプリ。
+  - 主な機能・アーキテクチャ要件:
+    1. Apple Pencil最適化: PointerEvent (pressure/tilt) による筆圧・傾き検知、getCoalescedEvents と desynchronized: true による低遅延描画、perfect-freehand による滑らかなインク線生成。
+    2. ジェスチャ操作: 幾何アルゴリズムによる「ぐちゃぐちゃ消去（Scribble to erase）」および「囲んで長押しによるなげなわ選択（Circle to lasso）」。
+    3. PDF連携: pdfjs-dist による下敷き表示・閲覧、pdf-lib による手書き注釈合成エクスポート。
+    4. ストレージ & 同期: IndexedDB (Dexie.js) によるローカルファースト高速保存、MSAL.js / Microsoft Graph API による OneDrive クラウド同期。
+    5. 技術スタック: React + TypeScript + Vite + Tailwind CSS + vite-plugin-pwa。
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always state what is out of scope
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
