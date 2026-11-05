@@ -87,3 +87,74 @@ export function renderStroke(ctx: CanvasRenderingContext2D, stroke: Stroke) {
   ctx.fill(path)
   ctx.restore()
 }
+
+/**
+ * 差分描画用: タップまたは書き始めの1点を高速に描画する
+ */
+export function renderDot(
+  ctx: CanvasRenderingContext2D,
+  point: StrokePoint,
+  size: number,
+  color: string,
+  isHighlighter = false
+) {
+  const pressure = point.pressure > 0 ? point.pressure : 0.5
+  const radius = isHighlighter
+    ? size / 2
+    : Math.max(0.5, (size * (0.4 + pressure * 0.8)) / 2)
+
+  ctx.save()
+  if (isHighlighter) {
+    ctx.globalCompositeOperation = 'multiply'
+    ctx.globalAlpha = 0.5
+    ctx.fillStyle = color
+  } else {
+    ctx.globalCompositeOperation = 'source-over'
+    ctx.globalAlpha = 1.0
+    ctx.fillStyle = color
+  }
+
+  ctx.beginPath()
+  ctx.arc(point.x, point.y, radius, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+}
+
+/**
+ * 差分描画用: 2点間をつなぐ最新セグメントを直接追記描画する (O(1))
+ */
+export function renderIncrementalSegment(
+  ctx: CanvasRenderingContext2D,
+  p1: StrokePoint,
+  p2: StrokePoint,
+  size: number,
+  color: string,
+  isHighlighter = false
+) {
+  const avgPressure = ((p1.pressure || 0.5) + (p2.pressure || 0.5)) / 2
+  const lineWidth = isHighlighter
+    ? size
+    : Math.max(1, size * (0.4 + avgPressure * 0.8))
+
+  ctx.save()
+  if (isHighlighter) {
+    ctx.globalCompositeOperation = 'multiply'
+    ctx.globalAlpha = 0.5
+    ctx.strokeStyle = color
+  } else {
+    ctx.globalCompositeOperation = 'source-over'
+    ctx.globalAlpha = 1.0
+    ctx.strokeStyle = color
+  }
+
+  ctx.lineWidth = lineWidth
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+
+  ctx.beginPath()
+  ctx.moveTo(p1.x, p1.y)
+  ctx.lineTo(p2.x, p2.y)
+  ctx.stroke()
+  ctx.restore()
+}
+

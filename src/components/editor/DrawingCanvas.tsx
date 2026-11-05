@@ -1,6 +1,13 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react'
 import type { Stroke, StrokePoint, StrokeTool, EraserMode } from '../../types/drawing'
-import { calculateBounds, renderStroke, getStrokePath2D } from '../../lib/drawing/stroke'
+import {
+  calculateBounds,
+  renderStroke,
+  getStrokePath2D,
+  renderDot,
+  renderIncrementalSegment,
+} from '../../lib/drawing/stroke'
+import { predictNextPoint } from '../../lib/drawing/prediction'
 import { eraseByStroke, eraseByPrecision } from '../../lib/drawing/eraser'
 import { isScribbleStroke, getScribbleEraseTargets } from '../../lib/gesture/scribble'
 import { recognizeShape, type ShapeRecognitionResult } from '../../lib/gesture/shapes'
@@ -35,6 +42,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const staticCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const activeCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const predictiveCanvasRef = useRef<HTMLCanvasElement | null>(null)
 
   // なげなわ選択状態
   const [selectedStrokeIds, setSelectedStrokeIds] = useState<string[]>([])
@@ -66,7 +74,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const isDrawingRef = useRef(false)
   const activePointerIdRef = useRef<number | null>(null)
   const activePointsRef = useRef<StrokePoint[]>([])
-  const lastPointRef = useRef<StrokePoint | null>(null)
+  const lastDrawnPointRef = useRef<StrokePoint | null>(null)
   const currentStrokesRef = useRef<Stroke[]>(strokes)
   const dimensionsRef = useRef<{ width: number; height: number; dpr: number }>({
     width: 0,
@@ -113,7 +121,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     }
   }, [])
 
-  // strokes または 選択状態 更新時の再描画
+  // strokes 更新時の再描画
   useEffect(() => {
     redrawStaticCanvas()
   }, [strokes, redrawStaticCanvas])
@@ -123,31 +131,24 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     (width: number, height: number) => {
       const staticCanvas = staticCanvasRef.current
       const activeCanvas = activeCanvasRef.current
-      if (!staticCanvas || !activeCanvas || width === 0 || height === 0) return
+      const predictiveCanvas = predictiveCanvasRef.current
+      if (!staticCanvas || !activeCanvas || !predictiveCanvas || width === 0 || height === 0) return
 
       const dpr = window.devicePixelRatio || 1
       dimensionsRef.current = { width, height, dpr }
 
-      staticCanvas.width = Math.round(width * dpr)
-      staticCanvas.height = Math.round(height * dpr)
-      staticCanvas.style.width = `${width}px`
-      staticCanvas.style.height = `${height}px`
+      const canvases = [staticCanvas, activeCanvas, predictiveCanvas]
+      for (const c of canvases) {
+        c.width = Math.round(width * dpr)
+        c.height = Math.round(height * dpr)
+        c.style.width = `${width}px`
+        c.style.height = `${height}px`
 
-      activeCanvas.width = Math.round(width * dpr)
-      activeCanvas.height = Math.round(height * dpr)
-      activeCanvas.style.width = `${width}px`
-      activeCanvas.style.height = `${height}px`
-
-      const staticCtx = staticCanvas.getContext('2d')
-      if (staticCtx) {
-        staticCtx.resetTransform?.()
-        staticCtx.scale(dpr, dpr)
-      }
-
-      const activeCtx = activeCanvas.getContext('2d', { desynchronized: true })
-      if (activeCtx) {
-        activeCtx.resetTransform?.()
-        activeCtx.scale(dpr, dpr)
+        const ctx = c.getContext('2d', c === staticCanvas ? undefined : { desynchronized: true })
+        if (ctx) {
+          ctx.resetTransform?.()
+          ctx.scale(dpr, dpr)
+        }
       }
 
       redrawStaticCanvas()
@@ -212,58 +213,71 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     contourHoldAnchorRef.current = null
   }
 
-  // アクティブストロークの描画更新
-  const renderActiveStrokePreview = useCallback(
-    (points: StrokePoint[], isSnapped = false) => {
-      const activeCanvas = activeCanvasRef.current
-      if (!activeCanvas) return
-      const activeCtx = activeCanvas.getContext('2d')
-      if (!activeCtx) return
+  // 予測・オーバーレイCanvasをクリア
+  const clearPredictiveCanvas = useCallback(() => {
+    const predictiveCanvas = predictiveCanvasRef.current
+    if (!predictiveCanvas) return
+    const ctx = predictiveCanvas.getContext('2d')
+    if (!ctx) return
+    const { width, height } = dimensionsRef.current
+    ctx.clearRect(0, 0, width, height)
+  }, [])
+
+  // アクティブCanvas（差分描画）をクリア
+  const clearActiveCanvas = useCallback(() => {
+    const activeCanvas = activeCanvasRef.current
+    if (!activeCanvas) return
+    const ctx = activeCanvas.getContext('2d')
+    if (!ctx) return
+    const { width, height } = dimensionsRef.current
+    ctx.clearRect(0, 0, width, height)
+  }, [])
+
+  // スナップ図形のプレビュー描画
+  const renderSnappedShapePreview = useCallback(
+    (shape: ShapeRecognitionResult) => {
+      // 差分描画層をクリアし、スナッププレビューをオーバーレイ層に描画
+      clearActiveCanvas()
+
+      const predictiveCanvas = predictiveCanvasRef.current
+      if (!predictiveCanvas) return
+      const ctx = predictiveCanvas.getContext('2d')
+      if (!ctx) return
 
       const { width, height } = dimensionsRef.current
-      activeCtx.clearRect(0, 0, width, height)
-
-      if (points.length === 0) return
+      ctx.clearRect(0, 0, width, height)
 
       const { selectedTool: toolName, selectedColor: color, selectedSize: size } = propsRef.current
       const isHighlighter = toolName === 'highlighter'
+      const path = getStrokePath2D(shape.points, size, isHighlighter)
 
-      const previewPoints =
-        points.length === 1
-          ? [points[0], { ...points[0], x: points[0].x + 0.1, y: points[0].y + 0.1 }]
-          : points
-
-      const path = getStrokePath2D(previewPoints, size, isHighlighter)
-
-      activeCtx.save()
+      ctx.save()
       if (isHighlighter) {
-        activeCtx.globalCompositeOperation = 'multiply'
-        activeCtx.globalAlpha = 0.5
-        activeCtx.fillStyle = color
+        ctx.globalCompositeOperation = 'multiply'
+        ctx.globalAlpha = 0.5
+        ctx.fillStyle = color
       } else {
-        activeCtx.globalCompositeOperation = 'source-over'
-        activeCtx.globalAlpha = 1.0
-        activeCtx.fillStyle = color
+        ctx.globalCompositeOperation = 'source-over'
+        ctx.globalAlpha = 1.0
+        ctx.fillStyle = color
       }
-      activeCtx.fill(path)
+      ctx.fill(path)
 
-      // スナップ時の視覚的アクセント（グロー効果）
-      if (isSnapped) {
-        activeCtx.strokeStyle = '#3b82f6'
-        activeCtx.lineWidth = 1.5
-        activeCtx.setLineDash([4, 4])
-        activeCtx.stroke(path)
-      }
-
-      activeCtx.restore()
+      // スナップ時の視覚的アクセント（青い破線ハイライト）
+      ctx.strokeStyle = '#3b82f6'
+      ctx.lineWidth = 1.5
+      ctx.setLineDash([4, 4])
+      ctx.stroke(path)
+      ctx.restore()
     },
-    []
+    [clearActiveCanvas]
   )
 
-  // アクティブストロークのコミット
+  // アクティブストロークの確定コミット（ペン離脱時に perfect-freehand で高精度清書）
   const commitActiveStroke = useCallback(() => {
     clearShapeHoldTimer()
     clearContourHoldTimer()
+    clearPredictiveCanvas()
 
     const points = activePointsRef.current
     const snapped = snappedShapeRef.current
@@ -274,7 +288,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       // スナップ図形が確定された場合
       let current = currentStrokesRef.current
       if (snapped.replacedStrokeIds && snapped.replacedStrokeIds.length > 0) {
-        // 日本式「口」などで以前のストロークを置換する場合
+        // 日本式「口」などで以前のストロークを置換
         current = current.filter((s) => !snapped.replacedStrokeIds?.includes(s.id))
         currentStrokesRef.current = current
         updateStrokes(current)
@@ -317,7 +331,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         candidateLoopRef.current = null
       }
 
-      // 下層の確定 Canvas に直接転写
+      // 下層の確定線 Canvas に直接転写（perfect-freehand による完全な滑らかさ）
       const staticCanvas = staticCanvasRef.current
       if (staticCanvas) {
         const staticCtx = staticCanvas.getContext('2d')
@@ -330,19 +344,11 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       addStroke(newStroke)
     }
 
-    // 上層のアクティブ Canvas をクリア
-    const activeCanvas = activeCanvasRef.current
-    if (activeCanvas) {
-      const activeCtx = activeCanvas.getContext('2d')
-      if (activeCtx) {
-        const { width, height } = dimensionsRef.current
-        activeCtx.clearRect(0, 0, width, height)
-      }
-    }
-
+    // 中層・上層のアクティブCanvasを完全クリア
+    clearActiveCanvas()
     activePointsRef.current = []
-    lastPointRef.current = null
-  }, [])
+    lastDrawnPointRef.current = null
+  }, [clearActiveCanvas, clearPredictiveCanvas])
 
   // 選択中のストロークを削除
   const handleDeleteSelected = () => {
@@ -386,7 +392,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
     // ポインタ押下イベント
     const handleNativePointerDown = (e: PointerEvent) => {
-      const { selectedTool: toolName, eraserMode: eMode, onUpdateStrokes: updateStrokes } = propsRef.current
+      const { selectedTool: toolName, selectedColor: color, selectedSize: size, eraserMode: eMode, onUpdateStrokes: updateStrokes } = propsRef.current
 
       if (e.cancelable) {
         e.preventDefault()
@@ -410,7 +416,6 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         )
         const selBounds = getSelectionBounds(selectedStrokes)
 
-        // 枠線だけでなく、選択オブジェクトの全体または選択領域内であればドラッグ可能
         if (isPointInSelection(pt, selectedStrokes, selBounds)) {
           isDraggingSelectionRef.current = true
           dragStartPointRef.current = pt
@@ -419,7 +424,6 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         } else {
           // 選択領域外タップで選択解除
           setSelectedStrokeIds([])
-          // そのまま通常の描画へ
         }
       }
 
@@ -427,10 +431,8 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       if (candidateLoopRef.current && (toolName === 'pen' || toolName === 'highlighter')) {
         const loop = candidateLoopRef.current
         if (isPointNearContour(pt, loop.points, 25)) {
-          // 輪郭近傍でペンダウン -> ホールドタイマー（350ms）開始
           contourHoldAnchorRef.current = { x: pt.x, y: pt.y }
           contourHoldTimerRef.current = setTimeout(() => {
-            // ホールド成功！ 閉ループストロークを削除し、囲まれたストロークを選択
             const remaining = currentStrokesRef.current.filter((s) => s.id !== loop.strokeId)
             currentStrokesRef.current = remaining
             updateStrokes(remaining)
@@ -439,7 +441,6 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             if (enclosed.length > 0) {
               const ids = enclosed.map((s) => s.id)
               setSelectedStrokeIds(ids)
-              // 即座にドラッグモードへ
               isDraggingSelectionRef.current = true
               dragStartPointRef.current = pt
               dragDeltaRef.current = { dx: 0, dy: 0 }
@@ -447,7 +448,8 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
             candidateLoopRef.current = null
             activePointsRef.current = []
-            renderActiveStrokePreview([])
+            clearActiveCanvas()
+            clearPredictiveCanvas()
           }, 350)
         }
       }
@@ -457,12 +459,22 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         commitActiveStroke()
       }
 
-      lastPointRef.current = pt
       snappedShapeRef.current = null
+      clearActiveCanvas()
+      clearPredictiveCanvas()
 
       if (toolName === 'pen' || toolName === 'highlighter') {
         activePointsRef.current = [pt]
-        renderActiveStrokePreview([pt])
+        lastDrawnPointRef.current = pt
+
+        // タップ直後の初期点（ドット）を即座に描画
+        const activeCanvas = activeCanvasRef.current
+        if (activeCanvas) {
+          const activeCtx = activeCanvas.getContext('2d')
+          if (activeCtx) {
+            renderDot(activeCtx, pt, size, color, toolName === 'highlighter')
+          }
+        }
 
         // 図形認識ホールドタイマーの開始準備
         shapeHoldAnchorRef.current = { x: pt.x, y: pt.y }
@@ -485,14 +497,14 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       }
     }
 
-    // ポインタ移動イベント
+    // ポインタ移動イベント（超高速インクリメンタル描画 ＋ 先行予測）
     const handleNativePointerMove = (e: PointerEvent) => {
       if (!isDrawingRef.current || activePointerIdRef.current !== e.pointerId) return
       if (e.cancelable) {
         e.preventDefault()
       }
 
-      const { selectedTool: toolName, eraserMode: eMode, onUpdateStrokes: updateStrokes } = propsRef.current
+      const { selectedTool: toolName, selectedColor: color, selectedSize: size, eraserMode: eMode, onUpdateStrokes: updateStrokes } = propsRef.current
 
       const coalesced = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : []
       const pointsList: StrokePoint[] =
@@ -508,35 +520,32 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         const dy = latestPt.y - dragStartPointRef.current.y
         dragDeltaRef.current = { dx, dy }
 
-        // 移動中のプレビューを描画
-        const activeCanvas = activeCanvasRef.current
-        if (activeCanvas) {
-          const activeCtx = activeCanvas.getContext('2d')
-          if (activeCtx) {
+        const predictiveCanvas = predictiveCanvasRef.current
+        if (predictiveCanvas) {
+          const ctx = predictiveCanvas.getContext('2d')
+          if (ctx) {
             const { width, height } = dimensionsRef.current
-            activeCtx.clearRect(0, 0, width, height)
+            ctx.clearRect(0, 0, width, height)
 
             const currentSelectedIds = selectedStrokeIdsRef.current
             const selected = currentStrokesRef.current.filter((s) =>
               currentSelectedIds.includes(s.id)
             )
 
-            // 静的Canvasから選択中ストロークを除いて再描画
             redrawStaticCanvas(currentSelectedIds)
 
-            // アクティブCanvasにオフセット適用して描画
-            activeCtx.save()
-            activeCtx.translate(dx, dy)
+            ctx.save()
+            ctx.translate(dx, dy)
             for (const s of selected) {
-              renderStroke(activeCtx, s)
+              renderStroke(ctx, s)
             }
-            activeCtx.restore()
+            ctx.restore()
           }
         }
         return
       }
 
-      // B. 輪郭ホールドの監視（半径 10px を超えたらキャンセル）
+      // B. 輪郭ホールドの監視（半径 12px を超えたらキャンセル）
       if (contourHoldAnchorRef.current) {
         const d = Math.hypot(
           latestPt.x - contourHoldAnchorRef.current.x,
@@ -553,72 +562,94 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
           activePointsRef.current.push(pt)
         }
 
-        const activeCanvas = activeCanvasRef.current
-        if (activeCanvas) {
-          const activeCtx = activeCanvas.getContext('2d')
-          if (activeCtx) {
+        const predictiveCanvas = predictiveCanvasRef.current
+        if (predictiveCanvas) {
+          const ctx = predictiveCanvas.getContext('2d')
+          if (ctx) {
             const { width, height } = dimensionsRef.current
-            activeCtx.clearRect(0, 0, width, height)
+            ctx.clearRect(0, 0, width, height)
 
             const pts = activePointsRef.current
             if (pts.length > 1) {
-              activeCtx.save()
-              activeCtx.strokeStyle = '#3b82f6'
-              activeCtx.lineWidth = 2
-              activeCtx.setLineDash([6, 6])
-              activeCtx.beginPath()
-              activeCtx.moveTo(pts[0].x, pts[0].y)
+              ctx.save()
+              ctx.strokeStyle = '#3b82f6'
+              ctx.lineWidth = 2
+              ctx.setLineDash([6, 6])
+              ctx.beginPath()
+              ctx.moveTo(pts[0].x, pts[0].y)
               for (let i = 1; i < pts.length; i++) {
-                activeCtx.lineTo(pts[i].x, pts[i].y)
+                ctx.lineTo(pts[i].x, pts[i].y)
               }
-              activeCtx.stroke()
-              activeCtx.restore()
+              ctx.stroke()
+              ctx.restore()
             }
           }
         }
         return
       }
 
-      // D. ペン・蛍光ペン描画
+      // D. ペン・蛍光ペンの超高速差分追記描画 (O(1)) ＋ ペン先予測
       if (toolName === 'pen' || toolName === 'highlighter') {
-        for (const pt of pointsList) {
-          activePointsRef.current.push(pt)
-          lastPointRef.current = pt
+        const activeCanvas = activeCanvasRef.current
+        const activeCtx = activeCanvas?.getContext('2d')
+        const isHighlighter = toolName === 'highlighter'
+
+        // 1. 各点を差分追記（clearRectなし！過去点への再計算なし！）
+        if (activeCtx) {
+          for (const pt of pointsList) {
+            const prev = lastDrawnPointRef.current || pt
+            renderIncrementalSegment(activeCtx, prev, pt, size, color, isHighlighter)
+            activePointsRef.current.push(pt)
+            lastDrawnPointRef.current = pt
+          }
         }
 
-        // 図形スナップがすでに適用されていない場合、通常プレビューを描画
-        if (!snappedShapeRef.current) {
-          renderActiveStrokePreview(activePointsRef.current)
+        // 2. ペン先予測インクの描画（最上層の predictiveCanvas に先端セグメントのみ瞬時に描画）
+        const predictiveCanvas = predictiveCanvasRef.current
+        if (predictiveCanvas && !snappedShapeRef.current) {
+          const predCtx = predictiveCanvas.getContext('2d')
+          if (predCtx) {
+            const { width, height } = dimensionsRef.current
+            predCtx.clearRect(0, 0, width, height)
+
+            const predicted = predictNextPoint(activePointsRef.current)
+            if (predicted && lastDrawnPointRef.current) {
+              renderIncrementalSegment(
+                predCtx,
+                lastDrawnPointRef.current,
+                predicted,
+                size,
+                color,
+                isHighlighter
+              )
+            }
+          }
         }
 
-        // 図形ホールドタイマー（400ms）の監視と更新
+        // 3. 図形ホールドタイマー（400ms）の監視
         if (shapeHoldAnchorRef.current) {
           const distFromAnchor = Math.hypot(
             latestPt.x - shapeHoldAnchorRef.current.x,
             latestPt.y - shapeHoldAnchorRef.current.y
           )
 
-          // 8px 以上動いたらホールドの基準点をリセットしてタイマー再始動
           if (distFromAnchor > 8) {
             shapeHoldAnchorRef.current = { x: latestPt.x, y: latestPt.y }
             clearShapeHoldTimer()
             shapeHoldTimerRef.current = setTimeout(() => {
-              // 400ms 静止ホールド -> 図形認識を実行！
               const recognized = recognizeShape(
                 activePointsRef.current,
                 currentStrokesRef.current
               )
               if (recognized) {
                 snappedShapeRef.current = recognized
-                // もし置換対象ストロークがあれば静的Canvasから一時除外
                 if (recognized.replacedStrokeIds) {
                   redrawStaticCanvas(recognized.replacedStrokeIds)
                 }
-                renderActiveStrokePreview(recognized.points, true)
+                renderSnappedShapePreview(recognized)
               }
             }, 400)
           } else if (!shapeHoldTimerRef.current && !snappedShapeRef.current) {
-            // 微小移動の範囲内ならタイマー開始
             shapeHoldTimerRef.current = setTimeout(() => {
               const recognized = recognizeShape(
                 activePointsRef.current,
@@ -629,7 +660,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
                 if (recognized.replacedStrokeIds) {
                   redrawStaticCanvas(recognized.replacedStrokeIds)
                 }
-                renderActiveStrokePreview(recognized.points, true)
+                renderSnappedShapePreview(recognized)
               }
             }, 400)
           }
@@ -639,7 +670,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         let current = currentStrokesRef.current
 
         for (const pt of pointsList) {
-          const prev = lastPointRef.current || pt
+          const prev = lastDrawnPointRef.current || pt
 
           if (eMode === 'stroke') {
             const next = eraseByStroke(current, prev, pt, 20)
@@ -654,7 +685,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
               updated = true
             }
           }
-          lastPointRef.current = pt
+          lastDrawnPointRef.current = pt
         }
 
         if (updated) {
@@ -672,6 +703,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
       clearShapeHoldTimer()
       clearContourHoldTimer()
+      clearPredictiveCanvas()
 
       if (e.cancelable) {
         e.preventDefault()
@@ -711,20 +743,13 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
           updateStrokes(next)
         }
 
-        // アクティブCanvasをクリア
-        const activeCanvas = activeCanvasRef.current
-        if (activeCanvas) {
-          const activeCtx = activeCanvas.getContext('2d')
-          if (activeCtx) {
-            const { width, height } = dimensionsRef.current
-            activeCtx.clearRect(0, 0, width, height)
-          }
-        }
+        clearActiveCanvas()
+        clearPredictiveCanvas()
         redrawStaticCanvas()
         return
       }
 
-      // B. ツールバーのなげなわ選択ツールでの囲み完了
+      // B. なげなわツールでの囲み完了
       if (propsRef.current.selectedTool === 'lasso') {
         const activePts = activePointsRef.current
         if (activePts.length > 5) {
@@ -734,14 +759,8 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
           }
         }
 
-        const activeCanvas = activeCanvasRef.current
-        if (activeCanvas) {
-          const activeCtx = activeCanvas.getContext('2d')
-          if (activeCtx) {
-            const { width, height } = dimensionsRef.current
-            activeCtx.clearRect(0, 0, width, height)
-          }
-        }
+        clearActiveCanvas()
+        clearPredictiveCanvas()
         activePointsRef.current = []
         return
       }
@@ -749,19 +768,11 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       // C. スクラブ消去判定（ぐちゃぐちゃ描いて消す）
       const activePts = activePointsRef.current
       if (!snappedShapeRef.current && isScribbleStroke(activePts)) {
-        // スクラブ確定！ アクティブCanvasを即座に破棄
-        const activeCanvas = activeCanvasRef.current
-        if (activeCanvas) {
-          const activeCtx = activeCanvas.getContext('2d')
-          if (activeCtx) {
-            const { width, height } = dimensionsRef.current
-            activeCtx.clearRect(0, 0, width, height)
-          }
-        }
+        clearActiveCanvas()
+        clearPredictiveCanvas()
         activePointsRef.current = []
-        lastPointRef.current = null
+        lastDrawnPointRef.current = null
 
-        // 交差・接触するストロークを削除
         const eraseTargetIds = getScribbleEraseTargets(currentStrokesRef.current, activePts)
         if (eraseTargetIds.length > 0) {
           const remaining = currentStrokesRef.current.filter(
@@ -774,7 +785,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         return
       }
 
-      // 通常または図形スナップのコミット
+      // D. 通常ストロークまたは図形スナップの確定コミット
       commitActiveStroke()
     }
 
@@ -799,7 +810,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       container.removeEventListener('pointerup', handleNativePointerEnd)
       container.removeEventListener('pointercancel', handleNativePointerEnd)
     }
-  }, [commitActiveStroke, redrawStaticCanvas, renderActiveStrokePreview])
+  }, [clearActiveCanvas, clearPredictiveCanvas, commitActiveStroke, redrawStaticCanvas, renderSnappedShapePreview])
 
   // なげなわ選択状態のバウンディングボックス計算
   const selectedStrokes = strokes.filter((s) => selectedStrokeIds.includes(s.id))
@@ -811,22 +822,28 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       className="canvas-interactive absolute inset-0 w-full h-full overflow-hidden select-none cursor-crosshair"
       style={{ touchAction: 'none' }}
     >
-      {/* 下層: 確定線 Canvas (静的キャッシュ) */}
+      {/* 1層目: 確定線 Canvas (静的キャッシュ) */}
       <canvas
         ref={staticCanvasRef}
         className="absolute inset-0 block pointer-events-none"
       />
 
-      {/* 上層: 描画中ストローク Canvas (低遅延) */}
+      {/* 2層目: 描画中ストローク Canvas (低遅延差分追記 O(1)) */}
       <canvas
         ref={activeCanvasRef}
+        className="absolute inset-0 block pointer-events-none"
+      />
+
+      {/* 3層目: ペン先先行予測インク & オーバーレイ Canvas */}
+      <canvas
+        ref={predictiveCanvasRef}
         className="absolute inset-0 block pointer-events-none"
       />
 
       {/* なげなわ選択オーバーレイ UI */}
       {selectionBounds && selectedStrokeIds.length > 0 && (
         <div
-          className="absolute border-2 border-dashed border-blue-500 rounded pointer-events-none transition-all duration-75"
+          className="absolute border-2 border-dashed border-blue-500 rounded pointer-events-none transition-all duration-75 z-10"
           style={{
             left: `${selectionBounds.minX}px`,
             top: `${selectionBounds.minY}px`,
