@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useCallback } from 'react'
 import {
   ChevronLeft,
   Pen,
@@ -62,6 +62,7 @@ interface PageItemProps {
   ) => void
   onFocusPage: (pageNumber: number) => void
   onStrokeChange: () => void
+  onPinchZoom?: (scaleFactor: number, center: { x: number; y: number }) => void
 }
 
 const PageItem: React.FC<PageItemProps> = ({
@@ -77,6 +78,7 @@ const PageItem: React.FC<PageItemProps> = ({
   onRegisterPageActions,
   onFocusPage,
   onStrokeChange,
+  onPinchZoom,
 }) => {
   const { strokes, addStroke, applyStrokesUpdate, undo, redo, canUndo, canRedo } =
     usePageDrawing(noteId, pageNumber)
@@ -122,6 +124,9 @@ const PageItem: React.FC<PageItemProps> = ({
           allowFingerDrawing={allowFingerDrawing}
           onAddStroke={handleAddStroke}
           onUpdateStrokes={handleUpdateStrokes}
+          onUndo={undo}
+          onRedo={redo}
+          onPinchZoom={onPinchZoom}
         />
       </div>
     </div>
@@ -147,6 +152,20 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
     Array.from({ length: initialPageCount }, (_, i) => i + 1)
   )
   const [activePageNum, setActivePageNum] = useState<number>(1)
+
+  // ズーム倍率管理（50%〜300%）
+  const [zoomScale, setZoomScale] = useState<number>(1.0)
+
+  const handlePinchZoom = useCallback((scaleFactor: number) => {
+    setZoomScale((prev) => {
+      const next = Math.min(3.0, Math.max(0.5, prev * scaleFactor))
+      return Math.round(next * 100) / 100
+    })
+  }, [])
+
+  const handleResetZoom = useCallback(() => {
+    setZoomScale(1.0)
+  }, [])
 
   // 指で描画するか、指でのスクロールを許可するか（localStorageで永続化、初期値はペン最適化のfalse）
   const [allowFingerDrawing, setAllowFingerDrawing] = useState<boolean>(() => {
@@ -286,6 +305,16 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
             >
               <Redo2 className="w-4 h-4" />
             </IconButton>
+
+            {/* ズーム倍率インジケーター & リセットボタン */}
+            <button
+              type="button"
+              onClick={handleResetZoom}
+              className="ml-1 text-[11px] font-mono font-bold text-slate-600 hover:text-indigo-600 px-2 py-0.5 rounded-md hover:bg-slate-100 border border-slate-200 transition-colors cursor-pointer select-none"
+              title="クリックして等倍 (100%) にリセット"
+            >
+              {Math.round(zoomScale * 100)}%
+            </button>
           </div>
         </div>
 
@@ -447,36 +476,42 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
 
       {/* メイン縦スクロール紙面ビューポート */}
       <main
-        className="flex-1 w-full overflow-y-auto overflow-x-hidden p-6 md:p-10 flex flex-col items-center gap-8 overscroll-contain"
+        className="flex-1 w-full overflow-y-auto overflow-x-auto p-6 md:p-10 flex flex-col items-center gap-8 overscroll-contain"
         style={{ touchAction: 'pan-y' }}
       >
-        {pages.map((pageNum) => (
-          <PageItem
-            key={pageNum}
-            noteId={note.id}
-            pageNumber={pageNum}
-            pageSize={note.pageSize || 'A4'}
-            template={note.template || 'blank'}
-            selectedTool={selectedTool}
-            selectedColor={selectedColor}
-            selectedSize={selectedTool === 'highlighter' ? selectedWidth * 3.5 : selectedWidth}
-            eraserMode={eraserMode}
-            allowFingerDrawing={allowFingerDrawing}
-            onRegisterPageActions={handleRegisterPageActions}
-            onFocusPage={setActivePageNum}
-            onStrokeChange={notifyDrawingUpdated}
-          />
-        ))}
-
-        {/* ページ追加フッター */}
-        <button
-          type="button"
-          onClick={handleAddPage}
-          className="my-4 py-3 px-6 rounded-2xl border-2 border-dashed border-slate-300 hover:border-indigo-400 bg-white/70 hover:bg-white text-slate-500 hover:text-indigo-600 font-medium text-sm flex items-center gap-2 transition-all shadow-xs cursor-pointer active:scale-95"
+        <div
+          className="w-full max-w-4xl flex flex-col items-center gap-8 transition-transform duration-75 origin-top shrink-0"
+          style={{ transform: `scale(${zoomScale})` }}
         >
-          <Plus className="w-4 h-4" />
-          <span>新しいページを追加</span>
-        </button>
+          {pages.map((pageNum) => (
+            <PageItem
+              key={pageNum}
+              noteId={note.id}
+              pageNumber={pageNum}
+              pageSize={note.pageSize || 'A4'}
+              template={note.template || 'blank'}
+              selectedTool={selectedTool}
+              selectedColor={selectedColor}
+              selectedSize={selectedTool === 'highlighter' ? selectedWidth * 3.5 : selectedWidth}
+              eraserMode={eraserMode}
+              allowFingerDrawing={allowFingerDrawing}
+              onRegisterPageActions={handleRegisterPageActions}
+              onFocusPage={setActivePageNum}
+              onStrokeChange={notifyDrawingUpdated}
+              onPinchZoom={handlePinchZoom}
+            />
+          ))}
+
+          {/* ページ追加フッター */}
+          <button
+            type="button"
+            onClick={handleAddPage}
+            className="my-4 py-3 px-6 rounded-2xl border-2 border-dashed border-slate-300 hover:border-indigo-400 bg-white/70 hover:bg-white text-slate-500 hover:text-indigo-600 font-medium text-sm flex items-center gap-2 transition-all shadow-xs cursor-pointer active:scale-95"
+          >
+            <Plus className="w-4 h-4" />
+            <span>新しいページを追加</span>
+          </button>
+        </div>
       </main>
     </div>
   )

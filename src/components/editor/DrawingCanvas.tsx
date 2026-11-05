@@ -29,6 +29,9 @@ export interface DrawingCanvasProps {
   allowFingerDrawing?: boolean
   onAddStroke: (stroke: Stroke) => void
   onUpdateStrokes: (strokes: Stroke[]) => void
+  onUndo?: () => void
+  onRedo?: () => void
+  onPinchZoom?: (scaleFactor: number, center: { x: number; y: number }) => void
 }
 
 export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
@@ -40,6 +43,9 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   allowFingerDrawing = true,
   onAddStroke,
   onUpdateStrokes,
+  onUndo,
+  onRedo,
+  onPinchZoom,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const staticCanvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -62,6 +68,9 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     allowFingerDrawing,
     onAddStroke,
     onUpdateStrokes,
+    onUndo,
+    onRedo,
+    onPinchZoom,
   })
   useEffect(() => {
     propsRef.current = {
@@ -72,8 +81,22 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       allowFingerDrawing,
       onAddStroke,
       onUpdateStrokes,
+      onUndo,
+      onRedo,
+      onPinchZoom,
     }
-  }, [selectedTool, selectedColor, selectedSize, eraserMode, allowFingerDrawing, onAddStroke, onUpdateStrokes])
+  }, [
+    selectedTool,
+    selectedColor,
+    selectedSize,
+    eraserMode,
+    allowFingerDrawing,
+    onAddStroke,
+    onUpdateStrokes,
+    onUndo,
+    onRedo,
+    onPinchZoom,
+  ])
 
   const isDrawingRef = useRef(false)
   const activePointerIdRef = useRef<number | null>(null)
@@ -85,6 +108,23 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     width: 0,
     height: 0,
     dpr: 1,
+  })
+
+  // マルチタッチジェスチャ（Undo/Redoタップ & ピンチズーム）管理
+  const multiTouchStateRef = useRef<{
+    activeFingerCount: number
+    startTime: number
+    hasMoved: boolean
+    startPositions: Array<{ x: number; y: number }>
+    initialDistance: number
+    lastDistance: number
+  }>({
+    activeFingerCount: 0,
+    startTime: 0,
+    hasMoved: false,
+    startPositions: [],
+    initialDistance: 0,
+    lastDistance: 0,
   })
 
   // ジェスチャー関連の ref
@@ -374,7 +414,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     const container = containerRef.current
     if (!container) return
 
-    const handleTouchPrevent = (e: TouchEvent) => {
+    const handleTouchStart = (e: TouchEvent) => {
       // 1. スタイラス（Apple Pencil）のタッチが含まれるか判定
       let isStylus = false
       for (let i = 0; i < e.touches.length; i++) {
@@ -385,8 +425,6 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         }
       }
 
-      // 2. スタイラスである、または現在ペンで描画セッション中の場合（パームリジェクション含む）
-      //    ブラウザのスクロール動作を絶対に発火させず、描画を維持する
       if (isStylus || activePointerTypeRef.current === 'pen') {
         if (e.cancelable) {
           e.preventDefault()
@@ -394,12 +432,134 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         return
       }
 
-      // 3. 指で描画が無効（スクロールモード）の場合はタッチイベントを阻止せず、ブラウザ標準のスクロールに任せる
+      // 2. マルチタッチ（2本指・3本指）の開始検出
+      if (e.touches.length >= 2) {
+        // 直前の1本指ドット等の誤描画があれば即座にクリア
+        if (activePointsRef.current.length > 0) {
+          activePointsRef.current = []
+          isDrawingRef.current = false
+          activePointerIdRef.current = null
+          clearActiveCanvas()
+          clearPredictiveCanvas()
+        }
+
+        let dist = 0
+        if (e.touches.length === 2) {
+          const p1 = { x: e.touches[0].clientX, y: e.touches[0].clientY }
+          const p2 = { x: e.touches[1].clientX, y: e.touches[1].clientY }
+          dist = Math.hypot(p2.x - p1.x, p2.y - p1.y)
+        }
+
+        multiTouchStateRef.current = {
+          activeFingerCount: e.touches.length,
+          startTime: performance.now(),
+          hasMoved: false,
+          startPositions: Array.from(e.touches).map((t) => ({ x: t.clientX, y: t.clientY })),
+          initialDistance: dist,
+          lastDistance: dist,
+        }
+
+        if (e.cancelable) {
+          e.preventDefault()
+        }
+        return
+      }
+
+      // 3. 1本指の場合
       if (!propsRef.current.allowFingerDrawing) {
         return
       }
 
-      // 4. 指で描画が有効な場合はタッチイベントを阻止して描画を可能にする
+      if (e.cancelable) {
+        e.preventDefault()
+      }
+    }
+
+    const handleTouchMove = (e: TouchEvent) => {
+      // スタイラス描画中
+      if (activePointerTypeRef.current === 'pen') {
+        if (e.cancelable) {
+          e.preventDefault()
+        }
+        return
+      }
+
+      const state = multiTouchStateRef.current
+
+      // 2本指ピンチズームの処理
+      if (e.touches.length === 2) {
+        const p1 = { x: e.touches[0].clientX, y: e.touches[0].clientY }
+        const p2 = { x: e.touches[1].clientX, y: e.touches[1].clientY }
+        const currentDist = Math.hypot(p2.x - p1.x, p2.y - p1.y)
+        const center = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 }
+
+        // 移動閾値判定 (10px超でピンチ確定・タップ判定解除)
+        if (Math.abs(currentDist - state.initialDistance) > 10) {
+          state.hasMoved = true
+        }
+
+        if (state.lastDistance > 0 && propsRef.current.onPinchZoom) {
+          const scaleDelta = currentDist / state.lastDistance
+          if (scaleDelta > 0.5 && scaleDelta < 2.0) {
+            propsRef.current.onPinchZoom(scaleDelta, center)
+          }
+        }
+        state.lastDistance = currentDist
+
+        if (e.cancelable) {
+          e.preventDefault()
+        }
+        return
+      }
+
+      // 3本指の場合の移動監視
+      if (e.touches.length === 3) {
+        state.hasMoved = true
+        if (e.cancelable) {
+          e.preventDefault()
+        }
+        return
+      }
+
+      // 1本指の場合
+      if (!propsRef.current.allowFingerDrawing) {
+        return
+      }
+
+      if (e.cancelable) {
+        e.preventDefault()
+      }
+    }
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      if (activePointerTypeRef.current === 'pen') {
+        if (e.cancelable) {
+          e.preventDefault()
+        }
+        return
+      }
+
+      // すべての指が離れた瞬間にタップ判定
+      if (e.touches.length === 0) {
+        const state = multiTouchStateRef.current
+        if (state.activeFingerCount >= 2 && !state.hasMoved) {
+          const elapsed = performance.now() - state.startTime
+          if (elapsed < 350) {
+            if (state.activeFingerCount === 2) {
+              propsRef.current.onUndo?.()
+            } else if (state.activeFingerCount === 3) {
+              propsRef.current.onRedo?.()
+            }
+          }
+        }
+        state.activeFingerCount = 0
+        state.hasMoved = false
+      }
+
+      if (!propsRef.current.allowFingerDrawing && e.touches.length === 0) {
+        return
+      }
+
       if (e.cancelable) {
         e.preventDefault()
       }
@@ -413,10 +573,10 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       e.preventDefault()
     }
 
-    container.addEventListener('touchstart', handleTouchPrevent, { passive: false })
-    container.addEventListener('touchmove', handleTouchPrevent, { passive: false })
-    container.addEventListener('touchend', handleTouchPrevent, { passive: false })
-    container.addEventListener('touchcancel', handleTouchPrevent, { passive: false })
+    container.addEventListener('touchstart', handleTouchStart, { passive: false })
+    container.addEventListener('touchmove', handleTouchMove, { passive: false })
+    container.addEventListener('touchend', handleTouchEnd, { passive: false })
+    container.addEventListener('touchcancel', handleTouchEnd, { passive: false })
     container.addEventListener('contextmenu', handleContextMenu)
     container.addEventListener('dblclick', handleDblClick)
 
@@ -430,6 +590,12 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         allowFingerDrawing: allowFinger,
         onUpdateStrokes: updateStrokes,
       } = propsRef.current
+
+      // マルチタッチ操作中（2本指・3本指）の場合は描画を開始しない
+      if (multiTouchStateRef.current.activeFingerCount >= 2 && e.pointerType === 'touch') {
+        activePointerTypeRef.current = null
+        return
+      }
 
       // 指で描画が無効で、かつポインターが指（touch）の場合は描画セッションを開始しない
       if (!allowFinger && e.pointerType === 'touch') {
@@ -844,10 +1010,10 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       clearShapeHoldTimer()
       clearContourHoldTimer()
 
-      container.removeEventListener('touchstart', handleTouchPrevent)
-      container.removeEventListener('touchmove', handleTouchPrevent)
-      container.removeEventListener('touchend', handleTouchPrevent)
-      container.removeEventListener('touchcancel', handleTouchPrevent)
+      container.removeEventListener('touchstart', handleTouchStart)
+      container.removeEventListener('touchmove', handleTouchMove)
+      container.removeEventListener('touchend', handleTouchEnd)
+      container.removeEventListener('touchcancel', handleTouchEnd)
       container.removeEventListener('contextmenu', handleContextMenu)
       container.removeEventListener('dblclick', handleDblClick)
 
