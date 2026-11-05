@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { db } from '../lib/db'
-import type { NoteMetadata } from '../types/note'
+import type { NoteMetadata, PageSize, PageTemplate } from '../types/note'
 import { PDFDocument } from 'pdf-lib'
 import { extractStrokesMetadata } from '../lib/pdf/metadata'
 import type { Stroke } from '../types/drawing'
@@ -21,6 +21,8 @@ export function useNotes() {
           createdAt: Date.now(),
           updatedAt: Date.now(),
           pageCount: 1,
+          pageSize: 'A4',
+          template: 'ruled-b',
         }
         await db.notes.add(initialNote)
         setNotes([initialNote])
@@ -38,18 +40,27 @@ export function useNotes() {
     loadNotes()
   }, [loadNotes])
 
-  const createNote = useCallback(async (title: string): Promise<NoteMetadata> => {
-    const newNote: NoteMetadata = {
-      id: `note-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-      title: title.trim() || '無題のノート',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      pageCount: 1,
-    }
-    await db.notes.add(newNote)
-    setNotes((prev) => [newNote, ...prev])
-    return newNote
-  }, [])
+  const createNote = useCallback(
+    async (
+      title: string,
+      pageSize: PageSize = 'A4',
+      template: PageTemplate = 'ruled-b'
+    ): Promise<NoteMetadata> => {
+      const newNote: NoteMetadata = {
+        id: `note-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        title: title.trim() || '無題のノート',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        pageCount: 1,
+        pageSize,
+        template,
+      }
+      await db.notes.add(newNote)
+      setNotes((prev) => [newNote, ...prev])
+      return newNote
+    },
+    []
+  )
 
   const importPdfNote = useCallback(async (file: File): Promise<NoteMetadata> => {
     const arrayBuffer = await file.arrayBuffer()

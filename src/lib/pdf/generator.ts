@@ -1,11 +1,17 @@
 import { PDFDocument, PDFPage, rgb, type RGB } from 'pdf-lib'
 import { getStroke } from 'perfect-freehand'
 import type { Stroke } from '../../types/drawing'
+import type { PageSize, PageTemplate } from '../../types/note'
+import {
+  PAGE_DIMENSIONS,
+  getRuledConfig,
+  getGridConfig,
+  TEMPLATE_COLORS,
+} from '../template/templateConstants'
 import { embedStrokesMetadata } from './metadata'
 
-/** A4 縦向き標準サイズ (pt: 1/72 inch) */
-export const A4_WIDTH_PT = 595.28
-export const A4_HEIGHT_PT = 841.89
+/** 1 mm あたりの pt 換算比率 (72 pt / 25.4 mm) */
+const PT_PER_MM = 72 / 25.4
 
 /**
  * 16進数カラーコード（#RRGGBB または #RGB）を pdf-lib の RGB オブジェクトに変換
@@ -77,6 +83,76 @@ function strokeToPdfSvgPath(
 }
 
 /**
+ * PDF ページにテンプレート（B罫、A罫、5mm方眼）のベクター罫線を背景描画する
+ */
+export function renderTemplateToPdfPage(
+  page: PDFPage,
+  template: PageTemplate = 'blank',
+  pageSize: PageSize = 'A4'
+) {
+  if (template === 'blank') return
+
+  const pageWidth = page.getWidth()
+  const pageHeight = page.getHeight()
+  const lineColor = rgb(
+    TEMPLATE_COLORS.pdfStroke.r,
+    TEMPLATE_COLORS.pdfStroke.g,
+    TEMPLATE_COLORS.pdfStroke.b
+  )
+  const thickness = TEMPLATE_COLORS.pdfStrokeWidthPt
+
+  if (template === 'ruled-b' || template === 'ruled-a') {
+    const config = getRuledConfig(pageSize, template)
+    const x1 = config.sideMarginMm * PT_PER_MM
+    const x2 = pageWidth - config.sideMarginMm * PT_PER_MM
+
+    for (let i = 0; i <= config.lineCount; i++) {
+      const topOffsetMm = config.topMarginMm + i * config.lineHeightMm
+      // PDF座標系は左下原点のため上端から差し引く
+      const y = pageHeight - topOffsetMm * PT_PER_MM
+
+      if (y >= 0 && y <= pageHeight) {
+        page.drawLine({
+          start: { x: x1, y },
+          end: { x: x2, y },
+          thickness,
+          color: lineColor,
+        })
+      }
+    }
+  } else if (template === 'grid-5mm') {
+    const grid = getGridConfig(pageSize)
+    const marginPt = grid.marginMm * PT_PER_MM
+    const gridPt = grid.gridSizeMm * PT_PER_MM
+
+    const xMin = marginPt
+    const xMax = pageWidth - marginPt
+    const yMin = marginPt
+    const yMax = pageHeight - marginPt
+
+    // 水平グリッド線
+    for (let y = yMin; y <= yMax + 0.1; y += gridPt) {
+      page.drawLine({
+        start: { x: xMin, y },
+        end: { x: xMax, y },
+        thickness,
+        color: lineColor,
+      })
+    }
+
+    // 垂直グリッド線
+    for (let x = xMin; x <= xMax + 0.1; x += gridPt) {
+      page.drawLine({
+        start: { x, y: yMin },
+        end: { x, y: yMax },
+        thickness,
+        color: lineColor,
+      })
+    }
+  }
+}
+
+/**
  * 単一の PDF ページに手書きストローク群をベクターグラフィックスとして描画する
  */
 export function renderStrokesToPdfPage(
@@ -118,23 +194,27 @@ export function renderStrokesToPdfPage(
  */
 export async function createBlankPdfDocument(
   pageCount = 1,
-  width = A4_WIDTH_PT,
-  height = A4_HEIGHT_PT
+  pageSize: PageSize = 'A4'
 ): Promise<PDFDocument> {
+  const dim = PAGE_DIMENSIONS[pageSize] || PAGE_DIMENSIONS.A4
   const doc = await PDFDocument.create()
   for (let i = 0; i < pageCount; i++) {
-    doc.addPage([width, height])
+    doc.addPage([dim.widthPt, dim.heightPt])
   }
   return doc
 }
 
 export interface ExportHybridPdfParams {
-  /** 元となるPDFバイナリ（インポートしたPDFの場合）。省略時は白紙PDFを作成 */
+  /** 元となるPDFバイナリ（インポートしたPDFの場合）。省略時は新規白紙PDFを作成 */
   basePdfBytes?: Uint8Array
   /** ページ番号 (1-based) をキーとする各ページのストローク一覧 */
   pageStrokes: Record<number, Stroke[]>
   /** ノートの総ページ数 */
   pageCount: number
+  /** 用紙サイズ (A4 / B5) */
+  pageSize?: PageSize
+  /** テンプレート種別 */
+  template?: PageTemplate
   /** エディタCanvasの基準幅（省略時はA4比率） */
   canvasWidth?: number
   /** エディタCanvasの基準高さ（省略時はA4比率） */
@@ -149,7 +229,9 @@ export async function exportHybridPdf(params: ExportHybridPdfParams): Promise<Ui
     basePdfBytes,
     pageStrokes,
     pageCount,
-    canvasWidth = 794, // 96 DPI A4 基準
+    pageSize = 'A4',
+    template = 'blank',
+    canvasWidth = 794,
     canvasHeight = 1123,
   } = params
 
@@ -157,7 +239,7 @@ export async function exportHybridPdf(params: ExportHybridPdfParams): Promise<Ui
   if (basePdfBytes && basePdfBytes.length > 0) {
     pdfDoc = await PDFDocument.load(basePdfBytes, { ignoreEncryption: true })
   } else {
-    pdfDoc = await createBlankPdfDocument(pageCount)
+    pdfDoc = await createBlankPdfDocument(pageCount, pageSize)
   }
 
   // ページ数の調整（必要に応じて末尾に追加）
@@ -166,12 +248,19 @@ export async function exportHybridPdf(params: ExportHybridPdfParams): Promise<Ui
     pdfDoc.addPage([firstPage.getWidth(), firstPage.getHeight()])
   }
 
-  // 各ページにストロークをベクター描画
+  // 各ページにテンプレート罫線と手書きストロークを描画
   const totalPages = pdfDoc.getPageCount()
   for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+    const page = pdfDoc.getPage(pageNum - 1)
+
+    // 1. 下敷きテンプレート罫線をベクター描画（元のインポートPDFがない場合のみ、または常にテンプレート適用）
+    if (!basePdfBytes && template !== 'blank') {
+      renderTemplateToPdfPage(page, template, pageSize)
+    }
+
+    // 2. 手書きストロークをベクター描画
     const strokes = pageStrokes[pageNum]
     if (strokes && strokes.length > 0) {
-      const page = pdfDoc.getPage(pageNum - 1)
       renderStrokesToPdfPage(page, strokes, canvasWidth, canvasHeight)
     }
   }

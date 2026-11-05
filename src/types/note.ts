@@ -1,3 +1,7 @@
+export type PageSize = 'A4' | 'B5'
+
+export type PageTemplate = 'blank' | 'ruled-b' | 'ruled-a' | 'grid-5mm'
+
 export interface NoteMetadata {
   id: string
   title: string
@@ -6,6 +10,8 @@ export interface NoteMetadata {
   pageCount: number
   isPdf?: boolean
   originalFileName?: string
+  pageSize?: PageSize
+  template?: PageTemplate
 }
 
 export interface PdfDocumentRecord {
@@ -13,4 +19,3 @@ export interface PdfDocumentRecord {
   data: Uint8Array
   updatedAt: number
 }
-

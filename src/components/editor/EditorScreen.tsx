@@ -12,10 +12,12 @@ import {
   CheckCircle2,
   Loader2,
 } from 'lucide-react'
-import type { NoteMetadata } from '../../types/note'
+import type { NoteMetadata, PageSize, PageTemplate } from '../../types/note'
 import type { EraserMode, Stroke } from '../../types/drawing'
 import { IconButton } from '../ui'
 import { DrawingCanvas } from './DrawingCanvas'
+import { TemplateBackground } from './TemplateBackground'
+import { TEMPLATE_LABELS } from '../../lib/template/templateConstants'
 import { usePageDrawing } from '../../hooks/usePageDrawing'
 import { usePdfSync } from '../../hooks/usePdfSync'
 
@@ -46,6 +48,8 @@ const STROKE_WIDTHS = [
 interface PageItemProps {
   noteId: string
   pageNumber: number
+  pageSize?: PageSize
+  template?: PageTemplate
   selectedTool: ToolType
   selectedColor: string
   selectedSize: number
@@ -61,6 +65,8 @@ interface PageItemProps {
 const PageItem: React.FC<PageItemProps> = ({
   noteId,
   pageNumber,
+  pageSize = 'A4',
+  template = 'blank',
   selectedTool,
   selectedColor,
   selectedSize,
@@ -87,18 +93,23 @@ const PageItem: React.FC<PageItemProps> = ({
     onStrokeChange()
   }
 
+  const aspectClass = pageSize === 'B5' ? 'aspect-[182/257]' : 'aspect-[210/297]'
+
   return (
     <div
       onClick={() => onFocusPage(pageNumber)}
-      className="relative w-full max-w-4xl aspect-[1/1.414] bg-white rounded-xl shadow-md border border-slate-300/80 shrink-0 transition-shadow hover:shadow-lg overflow-hidden"
+      className={`relative w-full max-w-4xl ${aspectClass} bg-white rounded-xl shadow-md border border-slate-300/80 shrink-0 transition-shadow hover:shadow-lg overflow-hidden`}
     >
       {/* ページヘッダーラベル */}
       <div className="absolute top-3 right-4 text-xs font-mono font-medium text-slate-400 select-none pointer-events-none z-10">
         P.{pageNumber}
       </div>
 
+      {/* テンプレート罫線・方眼背景（手書き描画スレッドに影響しない軽量SVG） */}
+      <TemplateBackground pageSize={pageSize} template={template} />
+
       {/* 手書きキャンバス: 用紙全体を確実にカバー */}
-      <div className="absolute inset-0 w-full h-full">
+      <div className="absolute inset-0 w-full h-full z-1">
         <DrawingCanvas
           strokes={strokes}
           selectedTool={selectedTool}
@@ -138,7 +149,7 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
     isSavingPdf,
     notifyDrawingUpdated,
     exportAndDownloadPdf,
-  } = usePdfSync(note.id, pages.length)
+  } = usePdfSync(note.id, pages.length, note.pageSize || 'A4', note.template || 'blank')
 
   // 各ページのアクション参照マップ
   const pageActionsMap = useRef<
@@ -216,6 +227,13 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
               {note.title}
             </button>
           )}
+
+          {/* 用紙サイズ・テンプレート情報バッジ */}
+          <div className="hidden lg:flex items-center gap-1 text-[11px] text-slate-500 font-medium px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200">
+            <span>{note.pageSize || 'A4'}</span>
+            <span>•</span>
+            <span>{TEMPLATE_LABELS[note.template || 'blank']?.label || '白紙'}</span>
+          </div>
 
           {/* 保存ステータスバッジ */}
           <div className="hidden md:flex items-center gap-1 text-[11px] text-slate-400 font-medium px-1.5 py-0.5 rounded bg-slate-100">
@@ -402,6 +420,8 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
             key={pageNum}
             noteId={note.id}
             pageNumber={pageNum}
+            pageSize={note.pageSize || 'A4'}
+            template={note.template || 'blank'}
             selectedTool={selectedTool}
             selectedColor={selectedColor}
             selectedSize={selectedTool === 'highlighter' ? selectedWidth * 3.5 : selectedWidth}

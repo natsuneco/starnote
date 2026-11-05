@@ -3,8 +3,14 @@ import { db } from '../lib/db'
 import { exportHybridPdf } from '../lib/pdf/generator'
 import { extractStrokesMetadataFromBytes } from '../lib/pdf/metadata'
 import type { Stroke } from '../types/drawing'
+import type { PageSize, PageTemplate } from '../types/note'
 
-export function usePdfSync(noteId: string, pageCount: number) {
+export function usePdfSync(
+  noteId: string,
+  pageCount: number,
+  pageSize: PageSize = 'A4',
+  template: PageTemplate = 'blank'
+) {
   const [isSavingPdf, setIsSavingPdf] = useState(false)
   const [lastSavedTime, setLastSavedTime] = useState<number | null>(null)
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -71,6 +77,8 @@ export function usePdfSync(noteId: string, pageCount: number) {
         basePdfBytes,
         pageStrokes,
         pageCount,
+        pageSize,
+        template,
       })
 
       // IndexedDB の pdfDocuments テーブルに永続化
@@ -87,7 +95,7 @@ export function usePdfSync(noteId: string, pageCount: number) {
     } finally {
       setIsSavingPdf(false)
     }
-  }, [noteId, pageCount])
+  }, [noteId, pageCount, pageSize, template])
 
   // 3. 描画更新の通知（デバウンスでPDF保存を発火）
   const notifyDrawingUpdated = useCallback(() => {
@@ -133,6 +141,8 @@ export function usePdfSync(noteId: string, pageCount: number) {
           basePdfBytes,
           pageStrokes,
           pageCount,
+          pageSize,
+          template,
         })
 
         // ブラウザダウンロード
@@ -153,7 +163,7 @@ export function usePdfSync(noteId: string, pageCount: number) {
         setIsSavingPdf(false)
       }
     },
-    [noteId, pageCount]
+    [noteId, pageCount, pageSize, template]
   )
 
   return {
