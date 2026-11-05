@@ -7,6 +7,8 @@ export interface PageDimension {
   heightPt: number
 }
 
+export const BASE_PAGE_WIDTH = 840
+
 export const PAGE_DIMENSIONS: Record<PageSize, PageDimension> = {
   A4: {
     widthMm: 210,

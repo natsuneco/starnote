@@ -18,7 +18,7 @@ import type { EraserMode, Stroke } from '../../types/drawing'
 import { IconButton } from '../ui'
 import { DrawingCanvas } from './DrawingCanvas'
 import { TemplateBackground } from './TemplateBackground'
-import { TEMPLATE_LABELS } from '../../lib/template/templateConstants'
+import { TEMPLATE_LABELS, BASE_PAGE_WIDTH } from '../../lib/template/templateConstants'
 import { usePageDrawing } from '../../hooks/usePageDrawing'
 import { usePdfSync } from '../../hooks/usePdfSync'
 
@@ -110,7 +110,7 @@ const PageItem: React.FC<PageItemProps> = ({
   return (
     <div
       onClick={() => onFocusPage(pageNumber)}
-      className={`relative w-full max-w-4xl ${aspectClass} bg-white rounded-xl shadow-md border border-slate-300/80 shrink-0 transition-shadow hover:shadow-lg overflow-hidden`}
+      className={`relative w-full ${aspectClass} bg-white rounded-xl shadow-md border border-slate-300/80 shrink-0 transition-shadow hover:shadow-lg overflow-hidden`}
     >
       {/* ページヘッダーラベル */}
       <div className="absolute top-3 right-4 text-xs font-mono font-medium text-slate-400 select-none pointer-events-none z-10">
@@ -198,8 +198,9 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
       const k = nextScale / currentScale
 
       // Focal Point 不変モデル:
-      // ピンチ中心点の下にあるコンテンツ位置を不変に保ちつつ、指の移動量 deltaX, deltaY を反映
-      const newTx = currentPan.x + deltaX - offsetX * (k - 1)
+      // X軸はFlexbox水平中央揃え (items-center) のため中心差分 (offsetX - rect.width / 2) をスケーリング
+      // Y軸は上端揃え (flex-col top-aligned) のため上端差分 offsetY をスケーリング
+      const newTx = currentPan.x + deltaX - (offsetX - rect.width / 2) * (k - 1)
       const newTy = currentPan.y + deltaY - offsetY * (k - 1)
 
       const roundedPan = {
@@ -570,12 +571,11 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
       >
         <div
           ref={paperContainerRef}
-          className="w-full max-w-4xl flex flex-col items-center gap-8 shrink-0"
+          className="flex flex-col items-center gap-8 shrink-0"
           style={{
-            transform: `translate3d(${panOffset.x}px, ${panOffset.y}px, 0) scale(${zoomScale})`,
-            transformOrigin: '0 0',
-            transition: isResettingZoom ? 'transform 0.25s ease-out' : 'none',
-            willChange: 'transform',
+            transform: `translate3d(${panOffset.x}px, ${panOffset.y}px, 0)`,
+            width: `${Math.round(BASE_PAGE_WIDTH * zoomScale)}px`,
+            transition: isResettingZoom ? 'transform 0.25s ease-out, width 0.25s ease-out' : 'none',
           }}
         >
           {pages.map((pageNum) => (

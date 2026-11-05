@@ -19,6 +19,7 @@ import {
   isPointInSelection,
 } from '../../lib/gesture/lasso'
 import { Trash2, X } from 'lucide-react'
+import { BASE_PAGE_WIDTH } from '../../lib/template/templateConstants'
 
 export interface DrawingCanvasProps {
   strokes: Stroke[]
@@ -175,10 +176,10 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     const ctx = staticCanvas.getContext('2d')
     if (!ctx) return
 
-    const { width, height } = dimensionsRef.current
-    if (width === 0 || height === 0) return
-
-    ctx.clearRect(0, 0, width, height)
+    ctx.save()
+    ctx.resetTransform()
+    ctx.clearRect(0, 0, staticCanvas.width, staticCanvas.height)
+    ctx.restore()
 
     for (const stroke of currentStrokesRef.current) {
       if (!excludeIds.includes(stroke.id)) {
@@ -192,7 +193,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     redrawStaticCanvas()
   }, [strokes, redrawStaticCanvas])
 
-  // Canvas 解像度のリサイズ・初期化処理
+  // Canvas 解像度のリサイズ・初期化処理（用紙の実寸拡大に連動した High-DPI ベクタースケーリング）
   const updateCanvasDimensions = useCallback(
     (width: number, height: number) => {
       const staticCanvas = staticCanvasRef.current
@@ -201,19 +202,31 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       if (!staticCanvas || !activeCanvas || !predictiveCanvas || width === 0 || height === 0) return
 
       const dpr = window.devicePixelRatio || 1
-      dimensionsRef.current = { width, height, dpr }
+      // iPad Safari の Canvas テクスチャ上限（長辺 4096px）に対する安全装置
+      const maxDim = Math.max(width, height) * dpr
+      const safeDpr = maxDim > 4096 ? dpr * (4096 / maxDim) : dpr
+
+      dimensionsRef.current = { width, height, dpr: safeDpr }
+
+      // 基準幅（840px）に対する現在の用紙実寸比率
+      const baseScale = width / BASE_PAGE_WIDTH
 
       const canvases = [staticCanvas, activeCanvas, predictiveCanvas]
       for (const c of canvases) {
-        c.width = Math.round(width * dpr)
-        c.height = Math.round(height * dpr)
+        const pixelW = Math.round(width * safeDpr)
+        const pixelH = Math.round(height * safeDpr)
+
+        if (c.width !== pixelW || c.height !== pixelH) {
+          c.width = pixelW
+          c.height = pixelH
+        }
         c.style.width = `${width}px`
         c.style.height = `${height}px`
 
         const ctx = c.getContext('2d', c === staticCanvas ? undefined : { desynchronized: true })
         if (ctx) {
-          ctx.resetTransform?.()
-          ctx.scale(dpr, dpr)
+          // 基準座標系（0 〜 840）から現在の画面サイズへのマトリックス変換
+          ctx.setTransform(safeDpr * baseScale, 0, 0, safeDpr * baseScale, 0, 0)
         }
       }
 
@@ -222,7 +235,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     [redrawStaticCanvas]
   )
 
-  // ResizeObserver でコンテナサイズを監視
+  // ResizeObserver でコンテナサイズ（ズーム連動の実寸サイズ）を監視
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
@@ -246,7 +259,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     return () => observer.disconnect()
   }, [updateCanvasDimensions])
 
-  // 座標変換ヘルパー
+  // 座標変換ヘルパー（現在の用紙実寸から基準座標系 BASE_PAGE_WIDTH に正規化）
   const getCanvasPointFromCoords = (
     clientX: number,
     clientY: number,
@@ -255,12 +268,11 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     const container = containerRef.current
     if (!container) return { x: clientX, y: clientY, pressure: pressure > 0 ? pressure : 0.5 }
     const rect = container.getBoundingClientRect()
-    // CSS transform（ズーム）時の描画解像度とのスケール補正
-    const scaleX = rect.width > 0 ? container.clientWidth / rect.width : 1
-    const scaleY = rect.height > 0 ? container.clientHeight / rect.height : 1
+    // 用紙の現在幅と基準幅 840px の比率で割ることで、基準座標系（0 〜 840）に正規化
+    const scale = rect.width > 0 ? rect.width / BASE_PAGE_WIDTH : 1
     return {
-      x: (clientX - rect.left) * scaleX,
-      y: (clientY - rect.top) * scaleY,
+      x: (clientX - rect.left) / scale,
+      y: (clientY - rect.top) / scale,
       pressure: pressure !== undefined && pressure > 0 ? pressure : 0.5,
     }
   }
@@ -288,8 +300,10 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     if (!predictiveCanvas) return
     const ctx = predictiveCanvas.getContext('2d')
     if (!ctx) return
-    const { width, height } = dimensionsRef.current
-    ctx.clearRect(0, 0, width, height)
+    ctx.save()
+    ctx.resetTransform()
+    ctx.clearRect(0, 0, predictiveCanvas.width, predictiveCanvas.height)
+    ctx.restore()
   }, [])
 
   // アクティブCanvas（差分描画）をクリア
@@ -298,8 +312,10 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     if (!activeCanvas) return
     const ctx = activeCanvas.getContext('2d')
     if (!ctx) return
-    const { width, height } = dimensionsRef.current
-    ctx.clearRect(0, 0, width, height)
+    ctx.save()
+    ctx.resetTransform()
+    ctx.clearRect(0, 0, activeCanvas.width, activeCanvas.height)
+    ctx.restore()
   }, [])
 
   // スナップ図形のプレビュー描画
@@ -799,8 +815,10 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         if (predictiveCanvas) {
           const ctx = predictiveCanvas.getContext('2d')
           if (ctx) {
-            const { width, height } = dimensionsRef.current
-            ctx.clearRect(0, 0, width, height)
+            ctx.save()
+            ctx.resetTransform()
+            ctx.clearRect(0, 0, predictiveCanvas.width, predictiveCanvas.height)
+            ctx.restore()
 
             const currentSelectedIds = selectedStrokeIdsRef.current
             const selected = currentStrokesRef.current.filter((s) =>
@@ -1102,11 +1120,15 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       container.removeEventListener('pointerup', handleNativePointerEnd)
       container.removeEventListener('pointercancel', handleNativePointerEnd)
     }
-  }, [clearActiveCanvas, clearPredictiveCanvas, commitActiveStroke, redrawStaticCanvas, renderSnappedShapePreview])
+  }, [clearActiveCanvas, clearPredictiveCanvas, commitActiveStroke, redrawStaticCanvas, renderSnappedShapePreview, updateCanvasDimensions])
 
   // なげなわ選択状態のバウンディングボックス計算
   const selectedStrokes = strokes.filter((s) => selectedStrokeIds.includes(s.id))
   const selectionBounds = getSelectionBounds(selectedStrokes)
+
+  // 基準幅（840px）から現在の画面実寸への表示スケール比率
+  const currentContainerW = containerRef.current?.clientWidth || dimensionsRef.current.width || BASE_PAGE_WIDTH
+  const displayScale = currentContainerW / BASE_PAGE_WIDTH
 
   return (
     <div
@@ -1132,15 +1154,15 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         className="absolute inset-0 block pointer-events-none"
       />
 
-      {/* なげなわ選択オーバーレイ UI */}
+      {/* なげなわ選択オーバーレイ UI（現在の用紙スケールに合わせて正確にマッピング） */}
       {selectionBounds && selectedStrokeIds.length > 0 && (
         <div
           className="absolute border-2 border-dashed border-blue-500 rounded pointer-events-none transition-all duration-75 z-10"
           style={{
-            left: `${selectionBounds.minX}px`,
-            top: `${selectionBounds.minY}px`,
-            width: `${selectionBounds.maxX - selectionBounds.minX}px`,
-            height: `${selectionBounds.maxY - selectionBounds.minY}px`,
+            left: `${selectionBounds.minX * displayScale}px`,
+            top: `${selectionBounds.minY * displayScale}px`,
+            width: `${(selectionBounds.maxX - selectionBounds.minX) * displayScale}px`,
+            height: `${(selectionBounds.maxY - selectionBounds.minY) * displayScale}px`,
             backgroundColor: 'rgba(59, 130, 246, 0.08)',
           }}
         >
