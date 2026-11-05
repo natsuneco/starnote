@@ -11,6 +11,7 @@ import {
   Download,
   CheckCircle2,
   Loader2,
+  Hand,
 } from 'lucide-react'
 import type { NoteMetadata, PageSize, PageTemplate } from '../../types/note'
 import type { EraserMode, Stroke } from '../../types/drawing'
@@ -54,6 +55,7 @@ interface PageItemProps {
   selectedColor: string
   selectedSize: number
   eraserMode: EraserMode
+  allowFingerDrawing?: boolean
   onRegisterPageActions: (
     pageNumber: number,
     actions: { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean }
@@ -71,6 +73,7 @@ const PageItem: React.FC<PageItemProps> = ({
   selectedColor,
   selectedSize,
   eraserMode,
+  allowFingerDrawing = false,
   onRegisterPageActions,
   onFocusPage,
   onStrokeChange,
@@ -116,6 +119,7 @@ const PageItem: React.FC<PageItemProps> = ({
           selectedColor={selectedColor}
           selectedSize={selectedSize}
           eraserMode={eraserMode}
+          allowFingerDrawing={allowFingerDrawing}
           onAddStroke={handleAddStroke}
           onUpdateStrokes={handleUpdateStrokes}
         />
@@ -143,6 +147,20 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
     Array.from({ length: initialPageCount }, (_, i) => i + 1)
   )
   const [activePageNum, setActivePageNum] = useState<number>(1)
+
+  // 指で描画するか、指でのスクロールを許可するか（localStorageで永続化、初期値はペン最適化のfalse）
+  const [allowFingerDrawing, setAllowFingerDrawing] = useState<boolean>(() => {
+    const saved = localStorage.getItem('starnote:allowFingerDrawing')
+    return saved !== null ? saved === 'true' : false
+  })
+
+  const handleToggleFingerDrawing = () => {
+    setAllowFingerDrawing((prev) => {
+      const next = !prev
+      localStorage.setItem('starnote:allowFingerDrawing', String(next))
+      return next
+    })
+  }
 
   // PDFネイティブ同期・エクスポート
   const {
@@ -306,11 +324,28 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
           <IconButton
             variant="tool"
             active={selectedTool === 'lasso'}
-            label="なげなわ選択 (後日対応)"
+            label="なげなわ選択"
             size="sm"
             onClick={() => setSelectedTool('lasso')}
           >
             <Lasso className="w-4 h-4" />
+          </IconButton>
+
+          <div className="h-4 w-px bg-slate-200 mx-0.5" />
+
+          {/* 指描画 / 指スクロール 切り替えトグル */}
+          <IconButton
+            variant="tool"
+            active={allowFingerDrawing}
+            label={
+              allowFingerDrawing
+                ? '指で描画: ON (タップで指スクロールに切替)'
+                : '指でスクロール: ON (ペン専用描画 / タップで指描画に切替)'
+            }
+            size="sm"
+            onClick={handleToggleFingerDrawing}
+          >
+            <Hand className="w-4 h-4" />
           </IconButton>
         </div>
 
@@ -426,6 +461,7 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
             selectedColor={selectedColor}
             selectedSize={selectedTool === 'highlighter' ? selectedWidth * 3.5 : selectedWidth}
             eraserMode={eraserMode}
+            allowFingerDrawing={allowFingerDrawing}
             onRegisterPageActions={handleRegisterPageActions}
             onFocusPage={setActivePageNum}
             onStrokeChange={notifyDrawingUpdated}

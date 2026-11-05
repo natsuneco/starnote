@@ -26,6 +26,7 @@ export interface DrawingCanvasProps {
   selectedColor: string
   selectedSize: number
   eraserMode: EraserMode
+  allowFingerDrawing?: boolean
   onAddStroke: (stroke: Stroke) => void
   onUpdateStrokes: (strokes: Stroke[]) => void
 }
@@ -36,6 +37,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   selectedColor,
   selectedSize,
   eraserMode,
+  allowFingerDrawing = true,
   onAddStroke,
   onUpdateStrokes,
 }) => {
@@ -57,6 +59,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     selectedColor,
     selectedSize,
     eraserMode,
+    allowFingerDrawing,
     onAddStroke,
     onUpdateStrokes,
   })
@@ -66,13 +69,15 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       selectedColor,
       selectedSize,
       eraserMode,
+      allowFingerDrawing,
       onAddStroke,
       onUpdateStrokes,
     }
-  }, [selectedTool, selectedColor, selectedSize, eraserMode, onAddStroke, onUpdateStrokes])
+  }, [selectedTool, selectedColor, selectedSize, eraserMode, allowFingerDrawing, onAddStroke, onUpdateStrokes])
 
   const isDrawingRef = useRef(false)
   const activePointerIdRef = useRef<number | null>(null)
+  const activePointerTypeRef = useRef<string | null>(null)
   const activePointsRef = useRef<StrokePoint[]>([])
   const lastDrawnPointRef = useRef<StrokePoint | null>(null)
   const currentStrokesRef = useRef<Stroke[]>(strokes)
@@ -370,6 +375,31 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     if (!container) return
 
     const handleTouchPrevent = (e: TouchEvent) => {
+      // 1. スタイラス（Apple Pencil）のタッチが含まれるか判定
+      let isStylus = false
+      for (let i = 0; i < e.touches.length; i++) {
+        const touch = e.touches[i] as unknown as { touchType?: string }
+        if (touch.touchType === 'stylus') {
+          isStylus = true
+          break
+        }
+      }
+
+      // 2. スタイラスである、または現在ペンで描画セッション中の場合（パームリジェクション含む）
+      //    ブラウザのスクロール動作を絶対に発火させず、描画を維持する
+      if (isStylus || activePointerTypeRef.current === 'pen') {
+        if (e.cancelable) {
+          e.preventDefault()
+        }
+        return
+      }
+
+      // 3. 指で描画が無効（スクロールモード）の場合はタッチイベントを阻止せず、ブラウザ標準のスクロールに任せる
+      if (!propsRef.current.allowFingerDrawing) {
+        return
+      }
+
+      // 4. 指で描画が有効な場合はタッチイベントを阻止して描画を可能にする
       if (e.cancelable) {
         e.preventDefault()
       }
@@ -392,7 +422,22 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
     // ポインタ押下イベント
     const handleNativePointerDown = (e: PointerEvent) => {
-      const { selectedTool: toolName, selectedColor: color, selectedSize: size, eraserMode: eMode, onUpdateStrokes: updateStrokes } = propsRef.current
+      const {
+        selectedTool: toolName,
+        selectedColor: color,
+        selectedSize: size,
+        eraserMode: eMode,
+        allowFingerDrawing: allowFinger,
+        onUpdateStrokes: updateStrokes,
+      } = propsRef.current
+
+      // 指で描画が無効で、かつポインターが指（touch）の場合は描画セッションを開始しない
+      if (!allowFinger && e.pointerType === 'touch') {
+        activePointerTypeRef.current = null
+        return
+      }
+
+      activePointerTypeRef.current = e.pointerType
 
       if (e.cancelable) {
         e.preventDefault()
@@ -700,6 +745,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       if (!isDrawingRef.current || activePointerIdRef.current !== e.pointerId) return
       isDrawingRef.current = false
       activePointerIdRef.current = null
+      activePointerTypeRef.current = null
 
       clearShapeHoldTimer()
       clearContourHoldTimer()
@@ -820,7 +866,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     <div
       ref={containerRef}
       className="canvas-interactive absolute inset-0 w-full h-full overflow-hidden select-none cursor-crosshair"
-      style={{ touchAction: 'none' }}
+      style={{ touchAction: allowFingerDrawing ? 'none' : 'pan-y' }}
     >
       {/* 1層目: 確定線 Canvas (静的キャッシュ) */}
       <canvas
