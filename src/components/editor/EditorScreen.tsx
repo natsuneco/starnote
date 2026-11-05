@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import {
   ChevronLeft,
   Pen,
@@ -10,7 +10,10 @@ import {
   Plus,
 } from 'lucide-react'
 import type { NoteMetadata } from '../../types/note'
+import type { EraserMode } from '../../types/drawing'
 import { IconButton } from '../ui'
+import { DrawingCanvas } from './DrawingCanvas'
+import { usePageDrawing } from '../../hooks/usePageDrawing'
 
 export type ToolType = 'pen' | 'highlighter' | 'eraser' | 'lasso'
 
@@ -35,6 +38,65 @@ const STROKE_WIDTHS = [
   { label: '太', value: 8 },
 ]
 
+// ページごとの紙面コンポーネント
+interface PageItemProps {
+  noteId: string
+  pageNumber: number
+  selectedTool: ToolType
+  selectedColor: string
+  selectedSize: number
+  eraserMode: EraserMode
+  onRegisterPageActions: (
+    pageNumber: number,
+    actions: { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean }
+  ) => void
+  onFocusPage: (pageNumber: number) => void
+}
+
+const PageItem: React.FC<PageItemProps> = ({
+  noteId,
+  pageNumber,
+  selectedTool,
+  selectedColor,
+  selectedSize,
+  eraserMode,
+  onRegisterPageActions,
+  onFocusPage,
+}) => {
+  const { strokes, addStroke, applyStrokesUpdate, undo, redo, canUndo, canRedo } =
+    usePageDrawing(noteId, pageNumber)
+
+  // 親へ最新のアクション状態を通知
+  useEffect(() => {
+    onRegisterPageActions(pageNumber, { undo, redo, canUndo, canRedo })
+  }, [pageNumber, undo, redo, canUndo, canRedo, onRegisterPageActions])
+
+  return (
+    <div
+      onClick={() => onFocusPage(pageNumber)}
+      className="relative w-full max-w-4xl aspect-[1/1.414] bg-white rounded-xl shadow-md border border-slate-300/80 shrink-0 transition-shadow hover:shadow-lg overflow-hidden"
+    >
+      {/* ページヘッダーラベル */}
+      <div className="absolute top-3 right-4 text-xs font-mono font-medium text-slate-400 select-none pointer-events-none z-10">
+        P.{pageNumber}
+      </div>
+
+      {/* 手書きキャンバス: 用紙全体を確実にカバー */}
+      <div className="absolute inset-0 w-full h-full">
+        <DrawingCanvas
+          strokes={strokes}
+          selectedTool={selectedTool}
+          selectedColor={selectedColor}
+          selectedSize={selectedSize}
+          eraserMode={eraserMode}
+          onAddStroke={addStroke}
+          onUpdateStrokes={applyStrokesUpdate}
+        />
+      </div>
+    </div>
+  )
+}
+
 export const EditorScreen: React.FC<EditorScreenProps> = ({
   note,
   onBack,
@@ -43,9 +105,31 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
   const [selectedTool, setSelectedTool] = useState<ToolType>('pen')
   const [selectedColor, setSelectedColor] = useState<string>(PRESET_COLORS[0])
   const [selectedWidth, setSelectedWidth] = useState<number>(4)
+  const [eraserMode, setEraserMode] = useState<EraserMode>('stroke')
+
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [titleInput, setTitleInput] = useState(note.title)
   const [pages, setPages] = useState<number[]>([1])
+  const [activePageNum, setActivePageNum] = useState<number>(1)
+
+  // 各ページのアクション参照マップ
+  const pageActionsMap = useRef<
+    Record<number, { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean }>
+  >({})
+
+  const handleRegisterPageActions = (
+    pageNumber: number,
+    actions: { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean }
+  ) => {
+    pageActionsMap.current[pageNumber] = actions
+  }
+
+  const activePageActions = pageActionsMap.current[activePageNum] || {
+    undo: () => {},
+    redo: () => {},
+    canUndo: false,
+    canRedo: false,
+  }
 
   const handleTitleSubmit = () => {
     setIsEditingTitle(false)
@@ -57,14 +141,16 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
   }
 
   const handleAddPage = () => {
-    setPages((prev) => [...prev, prev.length + 1])
+    const nextNum = pages.length + 1
+    setPages((prev) => [...prev, nextNum])
+    setActivePageNum(nextNum)
   }
 
   return (
-    <div className="w-screen h-screen flex flex-col bg-slate-200/90 overflow-hidden select-none touch-none">
+    <div className="w-screen h-screen flex flex-col bg-slate-200/90 overflow-hidden select-none">
       {/* 上部固定ツールバー */}
       <header className="h-14 bg-white/95 backdrop-blur-md border-b border-slate-200 px-4 flex items-center justify-between z-20 shadow-xs shrink-0">
-        {/* 左側: 戻るボタン & タイトル */}
+        {/* 左側: 戻るボタン & タイトル & Undo/Redo */}
         <div className="flex items-center gap-2 min-w-0">
           <IconButton label="一覧に戻る" size="sm" onClick={onBack}>
             <ChevronLeft className="w-5 h-5 text-slate-700" />
@@ -102,11 +188,22 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
             </button>
           )}
 
-          <div className="hidden sm:flex items-center gap-0.5 ml-2 text-slate-400">
-            <IconButton label="元に戻す" size="sm" disabled>
+          {/* Undo / Redo */}
+          <div className="flex items-center gap-0.5 ml-2 text-slate-600">
+            <IconButton
+              label="元に戻す"
+              size="sm"
+              onClick={() => activePageActions.undo()}
+              disabled={!activePageActions.canUndo}
+            >
               <Undo2 className="w-4 h-4" />
             </IconButton>
-            <IconButton label="やり直す" size="sm" disabled>
+            <IconButton
+              label="やり直す"
+              size="sm"
+              onClick={() => activePageActions.redo()}
+              disabled={!activePageActions.canRedo}
+            >
               <Redo2 className="w-4 h-4" />
             </IconButton>
           </div>
@@ -147,7 +244,7 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
           <IconButton
             variant="tool"
             active={selectedTool === 'lasso'}
-            label="なげなわ選択"
+            label="なげなわ選択 (後日対応)"
             size="sm"
             onClick={() => setSelectedTool('lasso')}
           >
@@ -155,9 +252,37 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
           </IconButton>
         </div>
 
-        {/* 右側: カラーパレット & 太さ選択 */}
+        {/* 右側: 消しゴムトグル / カラー / 太さ */}
         <div className="flex items-center gap-3">
-          {/* カラー選択 (消しゴム/なげなわ以外で表示) */}
+          {/* 消しゴム選択時: ストローク消し / 部分消し 切り替えトグル */}
+          {selectedTool === 'eraser' && (
+            <div className="flex items-center bg-slate-100 rounded-lg p-0.5 border border-slate-200 text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => setEraserMode('stroke')}
+                className={`px-2 py-1 rounded-md transition-all ${
+                  eraserMode === 'stroke'
+                    ? 'bg-white text-indigo-600 shadow-xs font-bold'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                ストローク消し
+              </button>
+              <button
+                type="button"
+                onClick={() => setEraserMode('precision')}
+                className={`px-2 py-1 rounded-md transition-all ${
+                  eraserMode === 'precision'
+                    ? 'bg-white text-indigo-600 shadow-xs font-bold'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                部分消し
+              </button>
+            </div>
+          )}
+
+          {/* カラー選択 (ペン / 蛍光ペン) */}
           {(selectedTool === 'pen' || selectedTool === 'highlighter') && (
             <div className="hidden sm:flex items-center gap-1.5">
               {PRESET_COLORS.map((color) => (
@@ -212,24 +337,22 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
       </header>
 
       {/* メイン縦スクロール紙面ビューポート */}
-      <main className="flex-1 w-full overflow-y-auto overflow-x-hidden p-6 md:p-10 flex flex-col items-center gap-8 overscroll-contain">
+      <main
+        className="flex-1 w-full overflow-y-auto overflow-x-hidden p-6 md:p-10 flex flex-col items-center gap-8 overscroll-contain"
+        style={{ touchAction: 'pan-y' }}
+      >
         {pages.map((pageNum) => (
-          <div
+          <PageItem
             key={pageNum}
-            className="relative w-full max-w-4xl aspect-[1/1.414] bg-white rounded-xl shadow-md border border-slate-300/80 flex flex-col overflow-hidden shrink-0 transition-shadow hover:shadow-lg"
-          >
-            {/* ページヘッダーラベル */}
-            <div className="absolute top-3 right-4 text-xs font-mono font-medium text-slate-300 select-none">
-              P.{pageNum}
-            </div>
-
-            {/* キャンバス描画領域（プレースホルダー） */}
-            <div className="canvas-viewport w-full h-full relative cursor-crosshair flex items-center justify-center">
-              <span className="text-xs text-slate-300 pointer-events-none select-none">
-                Page {pageNum} Canvas
-              </span>
-            </div>
-          </div>
+            noteId={note.id}
+            pageNumber={pageNum}
+            selectedTool={selectedTool}
+            selectedColor={selectedColor}
+            selectedSize={selectedTool === 'highlighter' ? selectedWidth * 3.5 : selectedWidth}
+            eraserMode={eraserMode}
+            onRegisterPageActions={handleRegisterPageActions}
+            onFocusPage={setActivePageNum}
+          />
         ))}
 
         {/* ページ追加フッター */}
