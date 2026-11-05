@@ -38,14 +38,15 @@ function parseColorToPdfRgb(hexColor: string): RGB {
 
 /**
  * ストロークの丸ペン輪郭ポリゴンから PDF 座標系の SVG パス文字列を生成
+ * 注意: pdf-lib の drawSvgPath(svgPath, { x: 0, y: pageHeight }) は内部で
+ * [1, 0, 0, -1, 0, pageHeight] 変換行列を適用するため、SVG パスは左上原点・Y軸下向き正のまま出力する
  */
 function strokeToPdfSvgPath(
   stroke: Stroke,
   scaleX: number,
-  scaleY: number,
-  pageHeight: number
+  scaleY: number
 ): string {
-  if (stroke.points.length < 2) return ''
+  if (!stroke.points || stroke.points.length < 2) return ''
 
   const inputPoints = stroke.points.map((p) => [p.x, p.y, p.pressure])
 
@@ -66,17 +67,17 @@ function strokeToPdfSvgPath(
 
   if (outline.length === 0) return ''
 
-  // Canvas座標（左上原点）から PDF座標（左下原点）への変換
-  const toPdfCoord = (x: number, y: number) => {
+  // Canvas座標（左上原点）から SVG座標への変換
+  const toSvgCoord = (x: number, y: number) => {
     const px = (x * scaleX).toFixed(2)
-    const py = (pageHeight - y * scaleY).toFixed(2)
+    const py = (y * scaleY).toFixed(2)
     return `${px} ${py}`
   }
 
-  const startCoord = toPdfCoord(outline[0][0], outline[0][1])
+  const startCoord = toSvgCoord(outline[0][0], outline[0][1])
   let d = `M ${startCoord}`
   for (let i = 1; i < outline.length; i++) {
-    d += ` L ${toPdfCoord(outline[i][0], outline[i][1])}`
+    d += ` L ${toSvgCoord(outline[i][0], outline[i][1])}`
   }
   d += ' Z'
   return d
@@ -195,11 +196,13 @@ export function renderStrokesToPdfPage(
       continue
     }
 
-    const svgPath = strokeToPdfSvgPath(stroke, scaleX, scaleY, pageHeight)
+    const svgPath = strokeToPdfSvgPath(stroke, scaleX, scaleY)
     if (!svgPath) continue
 
     try {
       page.drawSvgPath(svgPath, {
+        x: 0,
+        y: pageHeight,
         color,
         opacity,
       })
@@ -251,8 +254,8 @@ export async function exportHybridPdf(params: ExportHybridPdfParams): Promise<Ui
     pageCount,
     pageSize = 'A4',
     template = 'blank',
-    canvasWidth = 794,
-    canvasHeight = 1123,
+    canvasWidth = 840,
+    canvasHeight,
   } = params
 
   let pdfDoc: PDFDocument
@@ -281,7 +284,11 @@ export async function exportHybridPdf(params: ExportHybridPdfParams): Promise<Ui
     // 2. 手書きストロークをベクター描画
     const strokes = pageStrokes[pageNum]
     if (strokes && strokes.length > 0) {
-      renderStrokesToPdfPage(page, strokes, canvasWidth, canvasHeight)
+      const pWidth = page.getWidth()
+      const pHeight = page.getHeight()
+      const effectiveCanvasHeight =
+        canvasHeight ?? Math.round((canvasWidth * pHeight) / pWidth)
+      renderStrokesToPdfPage(page, strokes, canvasWidth, effectiveCanvasHeight)
     }
   }
 

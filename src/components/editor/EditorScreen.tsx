@@ -18,6 +18,7 @@ import type { EraserMode, Stroke } from '../../types/drawing'
 import { IconButton } from '../ui'
 import { DrawingCanvas } from './DrawingCanvas'
 import { TemplateBackground } from './TemplateBackground'
+import { PdfPageBackground } from './PdfPageBackground'
 import { TEMPLATE_LABELS, BASE_PAGE_WIDTH } from '../../lib/template/templateConstants'
 import { usePageDrawing } from '../../hooks/usePageDrawing'
 import { usePdfSync } from '../../hooks/usePdfSync'
@@ -51,6 +52,7 @@ interface PageItemProps {
   pageNumber: number
   pageSize?: PageSize
   template?: PageTemplate
+  isPdf?: boolean
   selectedTool: ToolType
   selectedColor: string
   selectedSize: number
@@ -76,6 +78,7 @@ const PageItem: React.FC<PageItemProps> = ({
   pageNumber,
   pageSize = 'A4',
   template = 'blank',
+  isPdf = false,
   selectedTool,
   selectedColor,
   selectedSize,
@@ -87,6 +90,7 @@ const PageItem: React.FC<PageItemProps> = ({
   onPinchZoom,
   onPan,
 }) => {
+  const [pdfAspectRatio, setPdfAspectRatio] = useState<number | null>(null)
   const { strokes, addStroke, applyStrokesUpdate, undo, redo, canUndo, canRedo } =
     usePageDrawing(noteId, pageNumber)
 
@@ -105,11 +109,21 @@ const PageItem: React.FC<PageItemProps> = ({
     onStrokeChange()
   }
 
-  const aspectClass = pageSize === 'B5' ? 'aspect-[182/257]' : 'aspect-[210/297]'
+  const aspectClass = isPdf
+    ? pdfAspectRatio
+      ? ''
+      : 'aspect-[210/297]'
+    : pageSize === 'B5'
+      ? 'aspect-[182/257]'
+      : 'aspect-[210/297]'
+
+  const containerStyle =
+    isPdf && pdfAspectRatio ? { aspectRatio: String(pdfAspectRatio) } : undefined
 
   return (
     <div
       onClick={() => onFocusPage(pageNumber)}
+      style={containerStyle}
       className={`relative w-full ${aspectClass} bg-white rounded-xl shadow-md border border-slate-300/80 shrink-0 transition-shadow hover:shadow-lg overflow-hidden`}
     >
       {/* ページヘッダーラベル */}
@@ -117,8 +131,16 @@ const PageItem: React.FC<PageItemProps> = ({
         P.{pageNumber}
       </div>
 
-      {/* テンプレート罫線・方眼背景（手書き描画スレッドに影響しない軽量SVG） */}
-      <TemplateBackground pageSize={pageSize} template={template} />
+      {/* ページ背景: PDFノート時はPDFページ描画、通常ノート時はテンプレート罫線 */}
+      {isPdf ? (
+        <PdfPageBackground
+          noteId={noteId}
+          pageNumber={pageNumber}
+          onAspectRatioLoaded={setPdfAspectRatio}
+        />
+      ) : (
+        <TemplateBackground pageSize={pageSize} template={template} />
+      )}
 
       {/* 手書きキャンバス: 用紙全体を確実にカバー */}
       <div className="absolute inset-0 w-full h-full z-1">
@@ -274,7 +296,13 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
     isSavingPdf,
     notifyDrawingUpdated,
     exportAndDownloadPdf,
-  } = usePdfSync(note.id, pages.length, note.pageSize || 'A4', note.template || 'blank')
+  } = usePdfSync(
+    note.id,
+    pages.length,
+    note.pageSize || 'A4',
+    note.template || 'blank',
+    Boolean(note.isPdf)
+  )
 
   // 各ページのアクション参照マップ
   const pageActionsMap = useRef<
@@ -585,6 +613,7 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
               pageNumber={pageNum}
               pageSize={note.pageSize || 'A4'}
               template={note.template || 'blank'}
+              isPdf={Boolean(note.isPdf)}
               selectedTool={selectedTool}
               selectedColor={selectedColor}
               selectedSize={selectedTool === 'highlighter' ? selectedWidth * 3.5 : selectedWidth}

@@ -17,5 +17,6 @@ export interface NoteMetadata {
 export interface PdfDocumentRecord {
   noteId: string
   data: Uint8Array
+  originalData?: Uint8Array
   updatedAt: number
 }

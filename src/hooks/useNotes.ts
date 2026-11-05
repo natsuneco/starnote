@@ -71,10 +71,11 @@ export function useNotes() {
     const noteId = `note-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`
     const title = file.name.replace(/\.pdf$/i, '') || 'インポートしたPDF'
 
-    // PDFバイナリを保存
+    // PDFバイナリを保存（原本データも保持）
     await db.pdfDocuments.put({
       noteId,
       data: pdfBytes,
+      originalData: pdfBytes,
       updatedAt: Date.now(),
     })
 

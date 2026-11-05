@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { db } from '../lib/db'
 import { exportHybridPdf } from '../lib/pdf/generator'
 import { extractStrokesMetadataFromBytes } from '../lib/pdf/metadata'
+import { BASE_PAGE_WIDTH } from '../lib/template/templateConstants'
 import type { Stroke } from '../types/drawing'
 import type { PageSize, PageTemplate } from '../types/note'
 
@@ -9,7 +10,8 @@ export function usePdfSync(
   noteId: string,
   pageCount: number,
   pageSize: PageSize = 'A4',
-  template: PageTemplate = 'blank'
+  template: PageTemplate = 'blank',
+  isPdf = false
 ) {
   const [isSavingPdf, setIsSavingPdf] = useState(false)
   const [lastSavedTime, setLastSavedTime] = useState<number | null>(null)
@@ -68,9 +70,11 @@ export function usePdfSync(
         pageStrokes[rec.pageNumber] = rec.strokes
       }
 
-      // 元のPDFバイナリが存在するか確認
+      // 元のPDFバイナリが存在するか確認（PDFノートの場合のみ原本PDFを使用）
       const existingDoc = await db.pdfDocuments.get(noteId)
-      const basePdfBytes = existingDoc?.data
+      const basePdfBytes = isPdf
+        ? (existingDoc?.originalData || existingDoc?.data)
+        : undefined
 
       // ハイブリッドPDFを生成
       const pdfBytes = await exportHybridPdf({
@@ -79,12 +83,14 @@ export function usePdfSync(
         pageCount,
         pageSize,
         template,
+        canvasWidth: BASE_PAGE_WIDTH,
       })
 
       // IndexedDB の pdfDocuments テーブルに永続化
       await db.pdfDocuments.put({
         noteId,
         data: pdfBytes,
+        originalData: isPdf ? basePdfBytes : undefined,
         updatedAt: Date.now(),
       })
 
@@ -95,7 +101,7 @@ export function usePdfSync(
     } finally {
       setIsSavingPdf(false)
     }
-  }, [noteId, pageCount, pageSize, template])
+  }, [noteId, pageCount, pageSize, template, isPdf])
 
   // 3. 描画更新の通知（デバウンスでPDF保存を発火）
   const notifyDrawingUpdated = useCallback(() => {
@@ -135,7 +141,9 @@ export function usePdfSync(
         }
 
         const existingDoc = await db.pdfDocuments.get(noteId)
-        const basePdfBytes = existingDoc?.data
+        const basePdfBytes = isPdf
+          ? (existingDoc?.originalData || existingDoc?.data)
+          : undefined
 
         const pdfBytes = await exportHybridPdf({
           basePdfBytes,
@@ -143,6 +151,7 @@ export function usePdfSync(
           pageCount,
           pageSize,
           template,
+          canvasWidth: BASE_PAGE_WIDTH,
         })
 
         // ブラウザダウンロード
@@ -163,7 +172,7 @@ export function usePdfSync(
         setIsSavingPdf(false)
       }
     },
-    [noteId, pageCount, pageSize, template]
+    [noteId, pageCount, pageSize, template, isPdf]
   )
 
   return {
