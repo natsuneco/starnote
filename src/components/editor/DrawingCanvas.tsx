@@ -31,7 +31,13 @@ export interface DrawingCanvasProps {
   onUpdateStrokes: (strokes: Stroke[]) => void
   onUndo?: () => void
   onRedo?: () => void
-  onPinchZoom?: (scaleFactor: number, center: { x: number; y: number }) => void
+  onPinchZoom?: (
+    scaleFactor: number,
+    focalPoint: { x: number; y: number },
+    deltaX: number,
+    deltaY: number
+  ) => void
+  onPan?: (deltaX: number, deltaY: number) => void
 }
 
 export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
@@ -46,6 +52,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   onUndo,
   onRedo,
   onPinchZoom,
+  onPan,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const staticCanvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -71,6 +78,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     onUndo,
     onRedo,
     onPinchZoom,
+    onPan,
   })
   useEffect(() => {
     propsRef.current = {
@@ -84,6 +92,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       onUndo,
       onRedo,
       onPinchZoom,
+      onPan,
     }
   }, [
     selectedTool,
@@ -96,6 +105,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     onUndo,
     onRedo,
     onPinchZoom,
+    onPan,
   ])
 
   const isDrawingRef = useRef(false)
@@ -110,6 +120,9 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     dpr: 1,
   })
 
+  // 1本指パン（指描画OFF時）追跡
+  const singleTouchPanRef = useRef<{ x: number; y: number } | null>(null)
+
   // マルチタッチジェスチャ（Undo/Redoタップ & ピンチズーム）管理
   const multiTouchStateRef = useRef<{
     activeFingerCount: number
@@ -118,6 +131,8 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     startPositions: Array<{ x: number; y: number }>
     initialDistance: number
     lastDistance: number
+    lastCenter: { x: number; y: number }
+    startCenter: { x: number; y: number }
   }>({
     activeFingerCount: 0,
     startTime: 0,
@@ -125,6 +140,8 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     startPositions: [],
     initialDistance: 0,
     lastDistance: 0,
+    lastCenter: { x: 0, y: 0 },
+    startCenter: { x: 0, y: 0 },
   })
 
   // ジェスチャー関連の ref
@@ -234,9 +251,12 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     const container = containerRef.current
     if (!container) return { x: clientX, y: clientY, pressure: pressure > 0 ? pressure : 0.5 }
     const rect = container.getBoundingClientRect()
+    // CSS transform（ズーム）時の描画解像度とのスケール補正
+    const scaleX = rect.width > 0 ? container.clientWidth / rect.width : 1
+    const scaleY = rect.height > 0 ? container.clientHeight / rect.height : 1
     return {
-      x: clientX - rect.left,
-      y: clientY - rect.top,
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY,
       pressure: pressure !== undefined && pressure > 0 ? pressure : 0.5,
     }
   }
@@ -434,6 +454,8 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
       // 2. マルチタッチ（2本指・3本指）の開始検出
       if (e.touches.length >= 2) {
+        singleTouchPanRef.current = null
+
         // 直前の1本指ドット等の誤描画があれば即座にクリア
         if (activePointsRef.current.length > 0) {
           activePointsRef.current = []
@@ -444,10 +466,12 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         }
 
         let dist = 0
-        if (e.touches.length === 2) {
+        let center = { x: 0, y: 0 }
+        if (e.touches.length >= 2) {
           const p1 = { x: e.touches[0].clientX, y: e.touches[0].clientY }
           const p2 = { x: e.touches[1].clientX, y: e.touches[1].clientY }
           dist = Math.hypot(p2.x - p1.x, p2.y - p1.y)
+          center = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 }
         }
 
         multiTouchStateRef.current = {
@@ -457,6 +481,8 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
           startPositions: Array.from(e.touches).map((t) => ({ x: t.clientX, y: t.clientY })),
           initialDistance: dist,
           lastDistance: dist,
+          lastCenter: center,
+          startCenter: center,
         }
 
         if (e.cancelable) {
@@ -467,9 +493,15 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
       // 3. 1本指の場合
       if (!propsRef.current.allowFingerDrawing) {
+        // 指描画OFF時は1本指パンの開始点を記録
+        singleTouchPanRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }
+        if (e.cancelable) {
+          e.preventDefault()
+        }
         return
       }
 
+      singleTouchPanRef.current = null
       if (e.cancelable) {
         e.preventDefault()
       }
@@ -486,25 +518,34 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
       const state = multiTouchStateRef.current
 
-      // 2本指ピンチズームの処理
+      // 2本指ピンチズーム & パンの処理
       if (e.touches.length === 2) {
         const p1 = { x: e.touches[0].clientX, y: e.touches[0].clientY }
         const p2 = { x: e.touches[1].clientX, y: e.touches[1].clientY }
         const currentDist = Math.hypot(p2.x - p1.x, p2.y - p1.y)
-        const center = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 }
+        const currentCenter = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 }
 
-        // 移動閾値判定 (10px超でピンチ確定・タップ判定解除)
-        if (Math.abs(currentDist - state.initialDistance) > 10) {
+        const deltaX = currentCenter.x - state.lastCenter.x
+        const deltaY = currentCenter.y - state.lastCenter.y
+
+        // 開始位置からの総移動量または指間距離の変化でジェスチャ移動を判定（タップ誤認防止）
+        const totalMove = Math.hypot(
+          currentCenter.x - state.startCenter.x,
+          currentCenter.y - state.startCenter.y
+        )
+        const totalDistDiff = Math.abs(currentDist - state.initialDistance)
+        if (totalMove > 8 || totalDistDiff > 8) {
           state.hasMoved = true
         }
 
         if (state.lastDistance > 0 && propsRef.current.onPinchZoom) {
           const scaleDelta = currentDist / state.lastDistance
           if (scaleDelta > 0.5 && scaleDelta < 2.0) {
-            propsRef.current.onPinchZoom(scaleDelta, center)
+            propsRef.current.onPinchZoom(scaleDelta, currentCenter, deltaX, deltaY)
           }
         }
         state.lastDistance = currentDist
+        state.lastCenter = currentCenter
 
         if (e.cancelable) {
           e.preventDefault()
@@ -523,6 +564,18 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
       // 1本指の場合
       if (!propsRef.current.allowFingerDrawing) {
+        // 指描画OFF時の1本指パン処理
+        if (singleTouchPanRef.current) {
+          const dx = e.touches[0].clientX - singleTouchPanRef.current.x
+          const dy = e.touches[0].clientY - singleTouchPanRef.current.y
+          if (dx !== 0 || dy !== 0) {
+            propsRef.current.onPan?.(dx, dy)
+            singleTouchPanRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }
+          }
+        }
+        if (e.cancelable) {
+          e.preventDefault()
+        }
         return
       }
 
@@ -541,6 +594,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
       // すべての指が離れた瞬間にタップ判定
       if (e.touches.length === 0) {
+        singleTouchPanRef.current = null
         const state = multiTouchStateRef.current
         if (state.activeFingerCount >= 2 && !state.hasMoved) {
           const elapsed = performance.now() - state.startTime
@@ -556,7 +610,10 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         state.hasMoved = false
       }
 
-      if (!propsRef.current.allowFingerDrawing && e.touches.length === 0) {
+      if (!propsRef.current.allowFingerDrawing) {
+        if (e.cancelable) {
+          e.preventDefault()
+        }
         return
       }
 

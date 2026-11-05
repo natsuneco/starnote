@@ -62,7 +62,13 @@ interface PageItemProps {
   ) => void
   onFocusPage: (pageNumber: number) => void
   onStrokeChange: () => void
-  onPinchZoom?: (scaleFactor: number, center: { x: number; y: number }) => void
+  onPinchZoom?: (
+    scaleFactor: number,
+    focalPoint: { x: number; y: number },
+    deltaX: number,
+    deltaY: number
+  ) => void
+  onPan?: (deltaX: number, deltaY: number) => void
 }
 
 const PageItem: React.FC<PageItemProps> = ({
@@ -79,6 +85,7 @@ const PageItem: React.FC<PageItemProps> = ({
   onFocusPage,
   onStrokeChange,
   onPinchZoom,
+  onPan,
 }) => {
   const { strokes, addStroke, applyStrokesUpdate, undo, redo, canUndo, canRedo } =
     usePageDrawing(noteId, pageNumber)
@@ -127,6 +134,7 @@ const PageItem: React.FC<PageItemProps> = ({
           onUndo={undo}
           onRedo={redo}
           onPinchZoom={onPinchZoom}
+          onPan={onPan}
         />
       </div>
     </div>
@@ -153,19 +161,98 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
   )
   const [activePageNum, setActivePageNum] = useState<number>(1)
 
-  // ズーム倍率管理（50%〜300%）
+  // ビューポート要素 & 紙面コンテナ要素の参照
+  const viewportRef = useRef<HTMLElement | null>(null)
+  const paperContainerRef = useRef<HTMLDivElement | null>(null)
+
+  // ズーム倍率（50%〜400%）およびパンオフセット管理
   const [zoomScale, setZoomScale] = useState<number>(1.0)
+  const [panOffset, setPanOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
+  const [isResettingZoom, setIsResettingZoom] = useState(false)
 
-  const handlePinchZoom = useCallback((scaleFactor: number) => {
-    setZoomScale((prev) => {
-      const next = Math.min(3.0, Math.max(0.5, prev * scaleFactor))
-      return Math.round(next * 100) / 100
-    })
+  // 同期用 ref（高速な連続タッチイベント間での状態ドリフト防止）
+  const zoomScaleRef = useRef(1.0)
+  const panOffsetRef = useRef({ x: 0, y: 0 })
+
+  // 2本指ピンチズーム & パン（Focal Point 不変モデル）
+  const handlePinchZoom = useCallback(
+    (
+      scaleFactor: number,
+      focalPoint: { x: number; y: number },
+      deltaX: number,
+      deltaY: number
+    ) => {
+      const container = paperContainerRef.current
+      if (!container) return
+
+      const rect = container.getBoundingClientRect()
+      // 現在の描画位置（rect.left, rect.top）とピンチ中心点の距離
+      const offsetX = focalPoint.x - rect.left
+      const offsetY = focalPoint.y - rect.top
+
+      const currentScale = zoomScaleRef.current
+      const currentPan = panOffsetRef.current
+
+      // ズーム倍率制約 (50%〜400%)
+      const nextScale = Math.min(4.0, Math.max(0.5, currentScale * scaleFactor))
+      const k = nextScale / currentScale
+
+      // Focal Point 不変モデル:
+      // ピンチ中心点の下にあるコンテンツ位置を不変に保ちつつ、指の移動量 deltaX, deltaY を反映
+      const newTx = currentPan.x + deltaX - offsetX * (k - 1)
+      const newTy = currentPan.y + deltaY - offsetY * (k - 1)
+
+      const roundedPan = {
+        x: Math.round(newTx * 10) / 10,
+        y: Math.round(newTy * 10) / 10,
+      }
+      const roundedScale = Math.round(nextScale * 100) / 100
+
+      zoomScaleRef.current = roundedScale
+      panOffsetRef.current = roundedPan
+
+      setZoomScale(roundedScale)
+      setPanOffset(roundedPan)
+    },
+    []
+  )
+
+  // 1本指パン（指描画OFF時）
+  const handlePan = useCallback((deltaX: number, deltaY: number) => {
+    const nextPan = {
+      x: Math.round((panOffsetRef.current.x + deltaX) * 10) / 10,
+      y: Math.round((panOffsetRef.current.y + deltaY) * 10) / 10,
+    }
+    panOffsetRef.current = nextPan
+    setPanOffset(nextPan)
   }, [])
 
+  // ズーム & パンのリセット（等倍・中央復帰）
   const handleResetZoom = useCallback(() => {
+    setIsResettingZoom(true)
+    zoomScaleRef.current = 1.0
+    panOffsetRef.current = { x: 0, y: 0 }
     setZoomScale(1.0)
+    setPanOffset({ x: 0, y: 0 })
+    setTimeout(() => {
+      setIsResettingZoom(false)
+    }, 250)
   }, [])
+
+  // マウスホイール & トラックパッドでのズーム・パン
+  const handleWheel = useCallback(
+    (e: React.WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        // ピンチズーム
+        const factor = e.deltaY < 0 ? 1.05 : 0.95
+        handlePinchZoom(factor, { x: e.clientX, y: e.clientY }, 0, 0)
+      } else {
+        // パン移動
+        handlePan(-e.deltaX, -e.deltaY)
+      }
+    },
+    [handlePinchZoom, handlePan]
+  )
 
   // 指で描画するか、指でのスクロールを許可するか（localStorageで永続化、初期値はペン最適化のfalse）
   const [allowFingerDrawing, setAllowFingerDrawing] = useState<boolean>(() => {
@@ -474,14 +561,22 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
         </div>
       </header>
 
-      {/* メイン縦スクロール紙面ビューポート */}
+      {/* メイン紙面ビューポート */}
       <main
-        className="flex-1 w-full overflow-y-auto overflow-x-auto p-6 md:p-10 flex flex-col items-center gap-8 overscroll-contain"
-        style={{ touchAction: 'pan-y' }}
+        ref={viewportRef}
+        onWheel={handleWheel}
+        className="flex-1 w-full h-full overflow-hidden p-6 md:p-10 flex flex-col items-center gap-8 overscroll-none relative select-none"
+        style={{ touchAction: 'none' }}
       >
         <div
-          className="w-full max-w-4xl flex flex-col items-center gap-8 transition-transform duration-75 origin-top shrink-0"
-          style={{ transform: `scale(${zoomScale})` }}
+          ref={paperContainerRef}
+          className="w-full max-w-4xl flex flex-col items-center gap-8 shrink-0"
+          style={{
+            transform: `translate3d(${panOffset.x}px, ${panOffset.y}px, 0) scale(${zoomScale})`,
+            transformOrigin: '0 0',
+            transition: isResettingZoom ? 'transform 0.25s ease-out' : 'none',
+            willChange: 'transform',
+          }}
         >
           {pages.map((pageNum) => (
             <PageItem
@@ -499,6 +594,7 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
               onFocusPage={setActivePageNum}
               onStrokeChange={notifyDrawingUpdated}
               onPinchZoom={handlePinchZoom}
+              onPan={handlePan}
             />
           ))}
 
