@@ -4,7 +4,7 @@ import { HomeScreen } from './components/home/HomeScreen'
 import { EditorScreen } from './components/editor/EditorScreen'
 
 function App() {
-  const { notes, loading, createNote, deleteNote, updateNoteTitle } = useNotes()
+  const { notes, loading, createNote, importPdfNote, deleteNote, updateNoteTitle } = useNotes()
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null)
 
   if (loading) {
@@ -32,6 +32,7 @@ function App() {
       notes={notes}
       onSelectNote={(noteId) => setActiveNoteId(noteId)}
       onCreateNote={createNote}
+      onImportPdfNote={importPdfNote}
       onDeleteNote={deleteNote}
     />
   )

@@ -8,12 +8,16 @@ import {
   Undo2,
   Redo2,
   Plus,
+  Download,
+  CheckCircle2,
+  Loader2,
 } from 'lucide-react'
 import type { NoteMetadata } from '../../types/note'
-import type { EraserMode } from '../../types/drawing'
+import type { EraserMode, Stroke } from '../../types/drawing'
 import { IconButton } from '../ui'
 import { DrawingCanvas } from './DrawingCanvas'
 import { usePageDrawing } from '../../hooks/usePageDrawing'
+import { usePdfSync } from '../../hooks/usePdfSync'
 
 export type ToolType = 'pen' | 'highlighter' | 'eraser' | 'lasso'
 
@@ -51,6 +55,7 @@ interface PageItemProps {
     actions: { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean }
   ) => void
   onFocusPage: (pageNumber: number) => void
+  onStrokeChange: () => void
 }
 
 const PageItem: React.FC<PageItemProps> = ({
@@ -62,6 +67,7 @@ const PageItem: React.FC<PageItemProps> = ({
   eraserMode,
   onRegisterPageActions,
   onFocusPage,
+  onStrokeChange,
 }) => {
   const { strokes, addStroke, applyStrokesUpdate, undo, redo, canUndo, canRedo } =
     usePageDrawing(noteId, pageNumber)
@@ -70,6 +76,16 @@ const PageItem: React.FC<PageItemProps> = ({
   useEffect(() => {
     onRegisterPageActions(pageNumber, { undo, redo, canUndo, canRedo })
   }, [pageNumber, undo, redo, canUndo, canRedo, onRegisterPageActions])
+
+  const handleAddStroke = (stroke: Stroke) => {
+    addStroke(stroke)
+    onStrokeChange()
+  }
+
+  const handleUpdateStrokes = (newStrokes: Stroke[]) => {
+    applyStrokesUpdate(newStrokes)
+    onStrokeChange()
+  }
 
   return (
     <div
@@ -89,8 +105,8 @@ const PageItem: React.FC<PageItemProps> = ({
           selectedColor={selectedColor}
           selectedSize={selectedSize}
           eraserMode={eraserMode}
-          onAddStroke={addStroke}
-          onUpdateStrokes={applyStrokesUpdate}
+          onAddStroke={handleAddStroke}
+          onUpdateStrokes={handleUpdateStrokes}
         />
       </div>
     </div>
@@ -109,8 +125,20 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
 
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [titleInput, setTitleInput] = useState(note.title)
-  const [pages, setPages] = useState<number[]>([1])
+
+  // ノートの初期ページ数からページ配列を初期化
+  const initialPageCount = Math.max(1, note.pageCount || 1)
+  const [pages, setPages] = useState<number[]>(() =>
+    Array.from({ length: initialPageCount }, (_, i) => i + 1)
+  )
   const [activePageNum, setActivePageNum] = useState<number>(1)
+
+  // PDFネイティブ同期・エクスポート
+  const {
+    isSavingPdf,
+    notifyDrawingUpdated,
+    exportAndDownloadPdf,
+  } = usePdfSync(note.id, pages.length)
 
   // 各ページのアクション参照マップ
   const pageActionsMap = useRef<
@@ -144,13 +172,14 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
     const nextNum = pages.length + 1
     setPages((prev) => [...prev, nextNum])
     setActivePageNum(nextNum)
+    notifyDrawingUpdated()
   }
 
   return (
     <div className="w-screen h-screen flex flex-col bg-slate-200/90 overflow-hidden select-none">
       {/* 上部固定ツールバー */}
       <header className="h-14 bg-white/95 backdrop-blur-md border-b border-slate-200 px-4 flex items-center justify-between z-20 shadow-xs shrink-0">
-        {/* 左側: 戻るボタン & タイトル & Undo/Redo */}
+        {/* 左側: 戻るボタン & タイトル & Undo/Redo & 保存ステータス */}
         <div className="flex items-center gap-2 min-w-0">
           <IconButton label="一覧に戻る" size="sm" onClick={onBack}>
             <ChevronLeft className="w-5 h-5 text-slate-700" />
@@ -181,12 +210,27 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
                 setTitleInput(note.title)
                 setIsEditingTitle(true)
               }}
-              className="text-sm font-bold text-slate-800 truncate hover:bg-slate-100 px-2 py-1 rounded-lg transition-colors cursor-pointer max-w-[180px] sm:max-w-xs text-left"
+              className="text-sm font-bold text-slate-800 truncate hover:bg-slate-100 px-2 py-1 rounded-lg transition-colors cursor-pointer max-w-[130px] sm:max-w-xs text-left"
               title="クリックしてタイトル編集"
             >
               {note.title}
             </button>
           )}
+
+          {/* 保存ステータスバッジ */}
+          <div className="hidden md:flex items-center gap-1 text-[11px] text-slate-400 font-medium px-1.5 py-0.5 rounded bg-slate-100">
+            {isSavingPdf ? (
+              <>
+                <Loader2 className="w-3 h-3 animate-spin text-indigo-500" />
+                <span>PDF保存中...</span>
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+                <span>保存済</span>
+              </>
+            )}
+          </div>
 
           {/* Undo / Redo */}
           <div className="flex items-center gap-0.5 ml-2 text-slate-600">
@@ -324,6 +368,18 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
 
           <div className="h-4 w-px bg-slate-200 hidden sm:block" />
 
+          {/* PDFエクスポート（ダウンロード）ボタン */}
+          <button
+            type="button"
+            onClick={() => exportAndDownloadPdf(note.title)}
+            disabled={isSavingPdf}
+            className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-lg bg-sky-50 text-sky-700 border border-sky-200 hover:bg-sky-100 transition-colors"
+            title="再編集メタデータ付きハイブリッドPDFとしてダウンロード"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">PDF出力</span>
+          </button>
+
           {/* ページ追加ボタン */}
           <button
             type="button"
@@ -352,6 +408,7 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
             eraserMode={eraserMode}
             onRegisterPageActions={handleRegisterPageActions}
             onFocusPage={setActivePageNum}
+            onStrokeChange={notifyDrawingUpdated}
           />
         ))}
 
