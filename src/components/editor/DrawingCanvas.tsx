@@ -320,13 +320,19 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       if (isHighlighter) {
         ctx.globalCompositeOperation = 'multiply'
         ctx.globalAlpha = 0.5
+        ctx.strokeStyle = color
         ctx.fillStyle = color
       } else {
         ctx.globalCompositeOperation = 'source-over'
         ctx.globalAlpha = 1.0
+        ctx.strokeStyle = color
         ctx.fillStyle = color
       }
-      ctx.fill(path)
+
+      ctx.lineWidth = size
+      ctx.lineCap = 'round'
+      ctx.lineJoin = 'round'
+      ctx.stroke(path)
 
       // スナップ時の視覚的アクセント（青い破線ハイライト）
       ctx.strokeStyle = '#3b82f6'
@@ -373,30 +379,25 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       addStroke(newStroke)
       snappedShapeRef.current = null
     } else if (points.length >= 1 && (toolName === 'pen' || toolName === 'highlighter')) {
-      const finalPoints =
-        points.length === 1
-          ? [points[0], { ...points[0], x: points[0].x + 0.1, y: points[0].y + 0.1 }]
-          : points
-
       const tool: StrokeTool = toolName === 'highlighter' ? 'highlighter' : 'pen'
       const newStroke: Stroke = {
         id: `stroke-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
         tool,
         color,
         size,
-        points: finalPoints,
-        bounds: calculateBounds(finalPoints, size),
+        points: [...points],
+        bounds: calculateBounds(points, size),
         createdAt: Date.now(),
       }
 
       // 閉ループか判定（輪郭ホールド選択候補として記録）
-      if (isClosedLoop(finalPoints)) {
-        candidateLoopRef.current = { strokeId: newStroke.id, points: [...finalPoints] }
+      if (isClosedLoop(points)) {
+        candidateLoopRef.current = { strokeId: newStroke.id, points: [...points] }
       } else {
         candidateLoopRef.current = null
       }
 
-      // 下層の確定線 Canvas に直接転写（perfect-freehand による完全な滑らかさ）
+      // 下層の確定線 Canvas に直接転写（丸ペンによる均一ストローク）
       const staticCanvas = staticCanvasRef.current
       if (staticCanvas) {
         const staticCtx = staticCanvas.getContext('2d')

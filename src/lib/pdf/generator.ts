@@ -37,7 +37,7 @@ function parseColorToPdfRgb(hexColor: string): RGB {
 }
 
 /**
- * ストロークの perfect-freehand 輪郭ポリゴンから PDF 座標系の SVG パス文字列を生成
+ * ストロークの丸ペン輪郭ポリゴンから PDF 座標系の SVG パス文字列を生成
  */
 function strokeToPdfSvgPath(
   stroke: Stroke,
@@ -45,22 +45,22 @@ function strokeToPdfSvgPath(
   scaleY: number,
   pageHeight: number
 ): string {
-  const isHighlighter = stroke.tool === 'highlighter'
+  if (stroke.points.length < 2) return ''
+
   const inputPoints = stroke.points.map((p) => [p.x, p.y, p.pressure])
 
   const outline = getStroke(inputPoints, {
     size: stroke.size,
-    thinning: isHighlighter ? 0.1 : 0.6,
+    thinning: 0,
     smoothing: 0.5,
-    streamline: 0.55,
-    easing: (t) => t,
+    streamline: 0,
     start: {
       cap: true,
-      taper: isHighlighter ? 0 : stroke.size * 0.5,
+      taper: 0,
     },
     end: {
       cap: true,
-      taper: isHighlighter ? 0 : stroke.size * 0.5,
+      taper: 0,
     },
   })
 
@@ -169,14 +169,34 @@ export function renderStrokesToPdfPage(
   const scaleY = pageHeight / canvasHeight
 
   for (const stroke of strokes) {
-    if (stroke.points.length === 0) continue
-
-    const svgPath = strokeToPdfSvgPath(stroke, scaleX, scaleY, pageHeight)
-    if (!svgPath) continue
+    if (!stroke.points || stroke.points.length === 0) continue
 
     const color = parseColorToPdfRgb(stroke.color)
     const isHighlighter = stroke.tool === 'highlighter'
     const opacity = isHighlighter ? 0.45 : 1.0
+
+    if (stroke.points.length === 1) {
+      // 単一タップ: 正円ドット（半径 size / 2）
+      const p = stroke.points[0]
+      const px = p.x * scaleX
+      const py = pageHeight - p.y * scaleY
+      const radius = (stroke.size * scaleX) / 2
+      try {
+        page.drawCircle({
+          x: px,
+          y: py,
+          size: radius,
+          color,
+          opacity,
+        })
+      } catch (err) {
+        console.warn('Failed to draw dot to PDF page:', err)
+      }
+      continue
+    }
+
+    const svgPath = strokeToPdfSvgPath(stroke, scaleX, scaleY, pageHeight)
+    if (!svgPath) continue
 
     try {
       page.drawSvgPath(svgPath, {
