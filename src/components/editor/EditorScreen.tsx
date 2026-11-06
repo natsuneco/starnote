@@ -126,11 +126,6 @@ const PageItem: React.FC<PageItemProps> = ({
       style={containerStyle}
       className={`relative w-full ${aspectClass} bg-white rounded-xl shadow-md border border-slate-300/80 shrink-0 transition-shadow hover:shadow-lg overflow-hidden`}
     >
-      {/* ページヘッダーラベル */}
-      <div className="absolute top-3 right-4 text-xs font-mono font-medium text-slate-400 select-none pointer-events-none z-10">
-        P.{pageNumber}
-      </div>
-
       {/* ページ背景: PDFノート時はPDFページ描画、通常ノート時はテンプレート罫線 */}
       {isPdf ? (
         <PdfPageBackground
