@@ -124,6 +124,9 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   // 1本指パン（指描画OFF時）追跡
   const singleTouchPanRef = useRef<{ x: number; y: number } | null>(null)
 
+  // 最終ペン活動時刻（パーム接触による誤Undo防止クールダウン用）
+  const lastPenTimeRef = useRef<number>(0)
+
   // マルチタッチジェスチャ（Undo/Redoタップ & ピンチズーム）管理
   const multiTouchStateRef = useRef<{
     activeFingerCount: number
@@ -475,10 +478,19 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         }
       }
 
-      if (isStylus || activePointerTypeRef.current === 'pen') {
+      const now = performance.now()
+      const isPenRecentlyActive =
+        isStylus ||
+        activePointerTypeRef.current === 'pen' ||
+        now - lastPenTimeRef.current < 600
+
+      if (isPenRecentlyActive) {
         if (e.cancelable) {
           e.preventDefault()
         }
+        // ペン活動中または直後はマルチタッチ状態を初期化させない（パーム誤認防止）
+        multiTouchStateRef.current.activeFingerCount = 0
+        multiTouchStateRef.current.hasMoved = true
         return
       }
 
@@ -615,7 +627,15 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     }
 
     const handleTouchEnd = (e: TouchEvent) => {
-      if (activePointerTypeRef.current === 'pen') {
+      const now = performance.now()
+      const isPenRecentlyActive =
+        activePointerTypeRef.current === 'pen' ||
+        now - lastPenTimeRef.current < 600
+
+      // ペン筆記中またはペン離脱後600ms以内のパーム離脱は誤Undo防止のため無視
+      if (isPenRecentlyActive) {
+        multiTouchStateRef.current.activeFingerCount = 0
+        multiTouchStateRef.current.hasMoved = true
         if (e.cancelable) {
           e.preventDefault()
         }
@@ -652,6 +672,16 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       }
     }
 
+    // OS からのパーム検知等のキャンセルイベント（ジェスチャーを不発化し即座にリセット）
+    const handleTouchCancel = (e: TouchEvent) => {
+      singleTouchPanRef.current = null
+      multiTouchStateRef.current.activeFingerCount = 0
+      multiTouchStateRef.current.hasMoved = true
+      if (e.cancelable) {
+        e.preventDefault()
+      }
+    }
+
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault()
     }
@@ -663,7 +693,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     container.addEventListener('touchstart', handleTouchStart, { passive: false })
     container.addEventListener('touchmove', handleTouchMove, { passive: false })
     container.addEventListener('touchend', handleTouchEnd, { passive: false })
-    container.addEventListener('touchcancel', handleTouchEnd, { passive: false })
+    container.addEventListener('touchcancel', handleTouchCancel, { passive: false })
     container.addEventListener('contextmenu', handleContextMenu)
     container.addEventListener('dblclick', handleDblClick)
 
@@ -694,6 +724,13 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       if (!allowFinger && e.pointerType === 'touch') {
         activePointerTypeRef.current = null
         return
+      }
+
+      if (e.pointerType === 'pen') {
+        lastPenTimeRef.current = performance.now()
+        // ペン筆記開始時に進行中のマルチタッチ状態を即座に破棄（先行するパーム接触を無効化）
+        multiTouchStateRef.current.activeFingerCount = 0
+        multiTouchStateRef.current.hasMoved = true
       }
 
       activePointerTypeRef.current = e.pointerType
@@ -805,6 +842,11 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     // ポインタ移動イベント（超高速インクリメンタル描画 ＋ 先行予測）
     const handleNativePointerMove = (e: PointerEvent) => {
       if (!isDrawingRef.current || activePointerIdRef.current !== e.pointerId) return
+
+      if (activePointerTypeRef.current === 'pen') {
+        lastPenTimeRef.current = performance.now()
+      }
+
       if (e.cancelable) {
         e.preventDefault()
       }
@@ -1021,6 +1063,11 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     // ポインタ離脱イベント
     const handleNativePointerEnd = (e: PointerEvent) => {
       if (!isDrawingRef.current || activePointerIdRef.current !== e.pointerId) return
+
+      if (activePointerTypeRef.current === 'pen') {
+        lastPenTimeRef.current = performance.now()
+      }
+
       isDrawingRef.current = false
       activePointerIdRef.current = null
       activePointerTypeRef.current = null
@@ -1125,7 +1172,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       container.removeEventListener('touchstart', handleTouchStart)
       container.removeEventListener('touchmove', handleTouchMove)
       container.removeEventListener('touchend', handleTouchEnd)
-      container.removeEventListener('touchcancel', handleTouchEnd)
+      container.removeEventListener('touchcancel', handleTouchCancel)
       container.removeEventListener('contextmenu', handleContextMenu)
       container.removeEventListener('dblclick', handleDblClick)
 
