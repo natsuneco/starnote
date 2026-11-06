@@ -444,11 +444,13 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     currentStrokesRef.current = next
     propsRef.current.onUpdateStrokes(next)
     setSelectedStrokeIds([])
+    redrawStaticCanvas()
   }
 
   // 選択解除
   const handleClearSelection = () => {
     setSelectedStrokeIds([])
+    redrawStaticCanvas()
   }
 
   // --- ネイティブイベントリスナーの登録 ---
@@ -457,6 +459,12 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     if (!container) return
 
     const handleTouchStart = (e: TouchEvent) => {
+      // なげなわアクションバーやUI要素のタッチ操作は早期リターン（描画・パンを抑止しない）
+      const target = e.target as HTMLElement | null
+      if (target && target.closest('[data-lasso-action-bar]')) {
+        return
+      }
+
       // 1. スタイラス（Apple Pencil）のタッチが含まれるか判定
       let isStylus = false
       for (let i = 0; i < e.touches.length; i++) {
@@ -661,6 +669,12 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
     // ポインタ押下イベント
     const handleNativePointerDown = (e: PointerEvent) => {
+      // なげなわアクションバーやUI要素の操作は早期リターン（描画セッション開始・選択解除・ポインター強奪を抑止）
+      const target = e.target as HTMLElement | null
+      if (target && target.closest('[data-lasso-action-bar]')) {
+        return
+      }
+
       const {
         selectedTool: toolName,
         selectedColor: color,
@@ -1155,43 +1169,67 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       />
 
       {/* なげなわ選択オーバーレイ UI（現在の用紙スケールに合わせて正確にマッピング） */}
-      {selectionBounds && selectedStrokeIds.length > 0 && (
-        <div
-          className="absolute border-2 border-dashed border-blue-500 rounded pointer-events-none transition-all duration-75 z-10"
-          style={{
-            left: `${selectionBounds.minX * displayScale}px`,
-            top: `${selectionBounds.minY * displayScale}px`,
-            width: `${(selectionBounds.maxX - selectionBounds.minX) * displayScale}px`,
-            height: `${(selectionBounds.maxY - selectionBounds.minY) * displayScale}px`,
-            backgroundColor: 'rgba(59, 130, 246, 0.08)',
-          }}
-        >
-          {/* アクションバー（削除 & 解除ボタン） */}
+      {selectionBounds && selectedStrokeIds.length > 0 && (() => {
+        const topPx = selectionBounds.minY * displayScale
+        const heightPx = (selectionBounds.maxY - selectionBounds.minY) * displayScale
+        // 用紙上端に近すぎる（45px未満）場合は、枠の下側にアクションバーを表示
+        const isCloseToTop = topPx < 45
+
+        return (
           <div
-            className="absolute -top-10 left-0 flex items-center gap-1 bg-white shadow-lg border border-slate-200 rounded-lg px-2 py-1 pointer-events-auto"
-            onClick={(e) => e.stopPropagation()}
+            className="absolute border-2 border-dashed border-blue-500 rounded pointer-events-none transition-all duration-75 z-10"
+            style={{
+              left: `${selectionBounds.minX * displayScale}px`,
+              top: `${topPx}px`,
+              width: `${(selectionBounds.maxX - selectionBounds.minX) * displayScale}px`,
+              height: `${heightPx}px`,
+              backgroundColor: 'rgba(59, 130, 246, 0.08)',
+            }}
           >
-            <button
-              type="button"
-              onClick={handleDeleteSelected}
-              className="flex items-center gap-1 text-xs font-medium text-red-600 hover:bg-red-50 px-2 py-1 rounded transition-colors"
-              title="削除"
+            {/* アクションバー（削除 & 解除ボタン） */}
+            <div
+              data-lasso-action-bar="true"
+              className={`absolute left-0 flex items-center gap-1 bg-white shadow-lg border border-slate-200 rounded-lg px-2 py-1 pointer-events-auto z-20 select-none ${
+                isCloseToTop ? '-bottom-10' : '-top-10'
+              }`}
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerUp={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
+              onTouchEnd={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
             >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>削除</span>
-            </button>
-            <div className="w-[1px] h-3 bg-slate-200" />
-            <button
-              type="button"
-              onClick={handleClearSelection}
-              className="flex items-center text-slate-500 hover:bg-slate-100 p-1 rounded transition-colors"
-              title="選択解除"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
+              <button
+                type="button"
+                onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  handleDeleteSelected()
+                }}
+                className="flex items-center gap-1 text-xs font-medium text-red-600 hover:bg-red-50 active:bg-red-100 px-2 py-1 rounded transition-colors cursor-pointer"
+                title="削除"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>削除</span>
+              </button>
+              <div className="w-[1px] h-3 bg-slate-200" />
+              <button
+                type="button"
+                onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  handleClearSelection()
+                }}
+                className="flex items-center text-slate-500 hover:bg-slate-100 active:bg-slate-200 p-1 rounded transition-colors cursor-pointer"
+                title="選択解除"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
     </div>
   )
 }
