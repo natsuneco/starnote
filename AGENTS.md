@@ -19,7 +19,7 @@ iPad Safari（PWAスタンドアロン動作）で快適に使える、GoodNotes
    - `IndexedDB` (Dexie.js) による高速・大容量のローカルファースト永続化（描画負荷を阻害しない非同期処理）
    - `@azure/msal-browser` + Microsoft Graph API による OneDrive クラウド保存・同期
 5. **アーキテクチャ**:
-   - React + TypeScript + Vite + Tailwind CSS + PWA (スタンドアロン起動)
+   - React + TypeScript + Vite + Tailwind CSS + shadcn/ui + PWA (スタンドアロン起動)
 
 ---
 
@@ -32,6 +32,10 @@ iPad Safari（PWAスタンドアロン動作）で快適に使える、GoodNotes
   - 既存実装と責務や機能が重複するものを新規に作成しない。
 - **既存機能の拡張を優先**:
   - 要件が少し不足している場合は、新規作成ではなく、既存の関数・コンポーネントにオプショナルな引数・Props を追加するなど、既存実装の小さな拡張で対応することを最優先とする。
+- **UI コンポーネントの自作禁止（shadcn/ui の徹底活用）**:
+  - UI 部品（ボタン、ダイアログ、モーダル、ポップオーバー、スライダー、ツールチップ、シート等）を安易にスクラッチで自作してはならない。
+  - プロジェクトに導入済みの `shadcn/ui` (`@/components/ui/*`) を必ず使用・拡張すること。
+  - 新規に必要な UI コンポーネントがある場合は `npx shadcn@latest add <component>` で公式コンポーネントを追加し、Tailwind クラスやバリアントの調整で要件を満たすこと。
 
 ### 2. 根本原因の特定と最小限の修正 (Root Cause & Minimal Fix)
 - **対症療法・無差別な安全網の禁止**:

@@ -15,7 +15,9 @@ import {
 } from 'lucide-react'
 import type { NoteMetadata, PageSize, PageTemplate } from '../../types/note'
 import type { EraserMode, Stroke } from '../../types/drawing'
-import { IconButton } from '../ui'
+import { Button } from '@/components/ui/button'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Slider } from '@/components/ui/slider'
 import { DrawingCanvas } from './DrawingCanvas'
 import { TemplateBackground } from './TemplateBackground'
 import { PdfPageBackground } from './PdfPageBackground'
@@ -340,9 +342,15 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
       <header className="h-14 bg-white/95 backdrop-blur-md border-b border-slate-200 px-4 flex items-center justify-between z-20 shadow-xs shrink-0">
         {/* 左側: 戻るボタン & タイトル & Undo/Redo & 保存ステータス */}
         <div className="flex items-center gap-2 min-w-0">
-          <IconButton label="一覧に戻る" size="sm" onClick={onBack}>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={onBack}
+            aria-label="一覧に戻る"
+            title="一覧に戻る"
+          >
             <ChevronLeft className="w-5 h-5 text-slate-700" />
-          </IconButton>
+          </Button>
 
           <div className="h-4 w-px bg-slate-200 mx-1" />
 
@@ -399,94 +407,108 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
           </div>
 
           {/* Undo / Redo */}
-          <div className="flex items-center gap-0.5 ml-2 text-slate-600">
-            <IconButton
-              label="元に戻す"
-              size="sm"
+          <div className="flex items-center gap-0.5 ml-1 text-slate-600">
+            <Button
+              variant="ghost"
+              size="icon-sm"
               onClick={() => activePageActions.undo()}
               disabled={!activePageActions.canUndo}
+              aria-label="元に戻す"
+              title="元に戻す"
             >
               <Undo2 className="w-4 h-4" />
-            </IconButton>
-            <IconButton
-              label="やり直す"
-              size="sm"
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
               onClick={() => activePageActions.redo()}
               disabled={!activePageActions.canRedo}
+              aria-label="やり直す"
+              title="やり直す"
             >
               <Redo2 className="w-4 h-4" />
-            </IconButton>
+            </Button>
 
             {/* ズーム倍率インジケーター & リセットボタン */}
-            <button
-              type="button"
+            <Button
+              variant="outline"
+              size="xs"
               onClick={handleResetZoom}
-              className="ml-1 text-[11px] font-mono font-bold text-slate-600 hover:text-indigo-600 px-2 py-0.5 rounded-md hover:bg-slate-100 border border-slate-200 transition-colors cursor-pointer select-none"
+              className="ml-1 text-[11px] font-mono font-bold text-slate-600 h-6 px-2"
               title="クリックして等倍 (100%) にリセット"
             >
               {Math.round(zoomScale * 100)}%
-            </button>
+            </Button>
           </div>
         </div>
 
         {/* 中央: 描画ツール選択 */}
-        <div className="flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/80 shadow-xs">
-          <IconButton
-            variant="tool"
-            active={selectedTool === 'pen'}
-            label="ペン"
-            size="sm"
+        <div className="flex items-center gap-1 bg-slate-100/90 p-1 rounded-2xl border border-slate-200/80 shadow-xs">
+          <Button
+            variant={selectedTool === 'pen' ? 'default' : 'ghost'}
+            size="icon-sm"
             onClick={() => setSelectedTool('pen')}
+            className={selectedTool === 'pen' ? 'bg-white text-indigo-600 shadow-xs hover:bg-white' : 'text-slate-600'}
+            aria-label="ペン"
+            title="ペン"
           >
             <Pen className="w-4 h-4" />
-          </IconButton>
+          </Button>
 
-          <IconButton
-            variant="tool"
-            active={selectedTool === 'highlighter'}
-            label="蛍光ペン"
-            size="sm"
+          <Button
+            variant={selectedTool === 'highlighter' ? 'default' : 'ghost'}
+            size="icon-sm"
             onClick={() => setSelectedTool('highlighter')}
+            className={selectedTool === 'highlighter' ? 'bg-white text-indigo-600 shadow-xs hover:bg-white' : 'text-slate-600'}
+            aria-label="蛍光ペン"
+            title="蛍光ペン"
           >
             <Highlighter className="w-4 h-4" />
-          </IconButton>
+          </Button>
 
-          <IconButton
-            variant="tool"
-            active={selectedTool === 'eraser'}
-            label="消しゴム"
-            size="sm"
+          <Button
+            variant={selectedTool === 'eraser' ? 'default' : 'ghost'}
+            size="icon-sm"
             onClick={() => setSelectedTool('eraser')}
+            className={selectedTool === 'eraser' ? 'bg-white text-indigo-600 shadow-xs hover:bg-white' : 'text-slate-600'}
+            aria-label="消しゴム"
+            title="消しゴム"
           >
             <Eraser className="w-4 h-4" />
-          </IconButton>
+          </Button>
 
-          <IconButton
-            variant="tool"
-            active={selectedTool === 'lasso'}
-            label="なげなわ選択"
-            size="sm"
+          <Button
+            variant={selectedTool === 'lasso' ? 'default' : 'ghost'}
+            size="icon-sm"
             onClick={() => setSelectedTool('lasso')}
+            className={selectedTool === 'lasso' ? 'bg-white text-indigo-600 shadow-xs hover:bg-white' : 'text-slate-600'}
+            aria-label="なげなわ選択"
+            title="なげなわ選択"
           >
             <Lasso className="w-4 h-4" />
-          </IconButton>
+          </Button>
 
           <div className="h-4 w-px bg-slate-200 mx-0.5" />
 
           {/* 指描画 / 指スクロール 切り替えトグル */}
-          <IconButton
-            variant="tool"
-            active={allowFingerDrawing}
-            label={
+          <Button
+            variant={allowFingerDrawing ? 'default' : 'ghost'}
+            size="icon-sm"
+            onClick={handleToggleFingerDrawing}
+            className={allowFingerDrawing ? 'bg-indigo-600 text-white shadow-xs hover:bg-indigo-700' : 'text-slate-600'}
+            aria-label={
               allowFingerDrawing
                 ? '指で描画: ON (タップで指スクロールに切替)'
                 : '指でスクロール: ON (ペン専用描画 / タップで指描画に切替)'
             }
-            size="sm"
-            onClick={handleToggleFingerDrawing}
+            title={
+              allowFingerDrawing
+                ? '指で描画: ON (タップで指スクロールに切替)'
+                : '指でスクロール: ON (ペン専用描画 / タップで指描画に切替)'
+            }
           >
             <Hand className="w-4 h-4" />
-          </IconButton>
+          </Button>
         </div>
 
         {/* 右側: 消しゴムトグル / カラー / 太さ */}
@@ -539,49 +561,98 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({
             </div>
           )}
 
-          {/* 太さピル */}
+          {/* 太さピル & 詳細設定 Popover */}
           {(selectedTool === 'pen' || selectedTool === 'highlighter') && (
-            <div className="flex items-center bg-slate-100 rounded-lg p-0.5 border border-slate-200">
-              {STROKE_WIDTHS.map((w) => (
-                <button
-                  key={w.value}
-                  type="button"
-                  onClick={() => setSelectedWidth(w.value)}
-                  className={`px-2 py-0.5 text-xs font-semibold rounded-md transition-all ${
-                    selectedWidth === w.value
-                      ? 'bg-white text-indigo-600 shadow-xs'
-                      : 'text-slate-500 hover:text-slate-800'
-                  }`}
-                >
-                  {w.label}
-                </button>
-              ))}
+            <div className="flex items-center gap-1.5">
+              <div className="flex items-center bg-slate-100 rounded-lg p-0.5 border border-slate-200">
+                {STROKE_WIDTHS.map((w) => (
+                  <button
+                    key={w.value}
+                    type="button"
+                    onClick={() => setSelectedWidth(w.value)}
+                    className={`px-2 py-0.5 text-xs font-semibold rounded-md transition-all ${
+                      selectedWidth === w.value
+                        ? 'bg-white text-indigo-600 shadow-xs'
+                        : 'text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    {w.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* 詳細設定 Popover */}
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    className="h-7 px-2 text-xs gap-1 font-medium text-slate-700 bg-white"
+                    title="太さ・カラー詳細設定"
+                  >
+                    <span
+                      className="w-2.5 h-2.5 rounded-full inline-block shrink-0"
+                      style={{ backgroundColor: selectedColor }}
+                    />
+                    <span>{selectedWidth}px</span>
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-64 p-3 gap-3">
+                  <div className="text-xs font-bold text-slate-700">ストロークの太さ: {selectedWidth}px</div>
+                  <Slider
+                    min={1}
+                    max={24}
+                    step={1}
+                    value={[selectedWidth]}
+                    onValueChange={(val) => val[0] && setSelectedWidth(val[0])}
+                  />
+                  <div className="text-xs font-bold text-slate-700 pt-1">カラーパレット</div>
+                  <div className="grid grid-cols-6 gap-2 pt-1">
+                    {PRESET_COLORS.map((color) => (
+                      <button
+                        key={color}
+                        type="button"
+                        onClick={() => setSelectedColor(color)}
+                        style={{ backgroundColor: color }}
+                        className={`w-7 h-7 rounded-full transition-transform ${
+                          selectedColor === color
+                            ? 'scale-110 ring-2 ring-offset-2 ring-indigo-500'
+                            : 'hover:scale-105 opacity-90'
+                        }`}
+                        aria-label={`色 ${color}`}
+                      />
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
             </div>
           )}
 
           <div className="h-4 w-px bg-slate-200 hidden sm:block" />
 
           {/* PDFエクスポート（ダウンロード）ボタン */}
-          <button
-            type="button"
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => exportAndDownloadPdf(note.title)}
             disabled={isSavingPdf}
-            className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-lg bg-sky-50 text-sky-700 border border-sky-200 hover:bg-sky-100 transition-colors"
+            className="text-xs gap-1 text-sky-700 border-sky-200 hover:bg-sky-50"
             title="再編集メタデータ付きハイブリッドPDFとしてダウンロード"
           >
             <Download className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">PDF出力</span>
-          </button>
+          </Button>
 
           {/* ページ追加ボタン */}
-          <button
-            type="button"
+          <Button
+            variant="default"
+            size="sm"
             onClick={handleAddPage}
-            className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-lg bg-indigo-50 text-indigo-600 border border-indigo-100 hover:bg-indigo-100 transition-colors"
+            className="text-xs gap-1 bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs"
           >
             <Plus className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">ページ追加</span>
-          </button>
+          </Button>
         </div>
       </header>
 

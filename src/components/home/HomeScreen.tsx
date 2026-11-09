@@ -1,7 +1,16 @@
 import React, { useState, useRef } from 'react'
 import { Plus, Trash2, BookOpen, Clock, FileText, Upload, FileUp, Check } from 'lucide-react'
 import type { NoteMetadata, PageSize, PageTemplate } from '../../types/note'
-import { Card, Button, IconButton, Modal, Input } from '../ui'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from '@/components/ui/dialog'
 import { TEMPLATE_LABELS } from '../../lib/template/templateConstants'
 
 export interface HomeScreenProps {
@@ -148,8 +157,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           {/* PDFインポートボタン */}
           {onImportPdfNote && (
             <Button
-              variant="secondary"
-              size="md"
+              variant="outline"
+              size="default"
               onClick={handleTriggerFileInput}
               disabled={isImporting}
               className="gap-1.5"
@@ -170,8 +179,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
           {/* 新規ノート作成ボタン */}
           <Button
-            variant="primary"
-            size="md"
+            variant="default"
+            size="default"
             onClick={handleOpenCreateModal}
             className="gap-1.5 shadow-sm shadow-indigo-200"
           >
@@ -204,9 +213,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           {notes.map((note) => (
             <Card
               key={note.id}
-              interactive
               onClick={() => onSelectNote(note.id)}
-              className="group flex flex-col aspect-[3/4] relative overflow-hidden border-slate-200/90"
+              className="group flex flex-col aspect-[3/4] relative overflow-hidden border-slate-200/90 cursor-pointer p-0 gap-0"
             >
               {/* 表紙・プレビュー領域 */}
               <div className="flex-1 bg-gradient-to-b from-slate-100/70 to-slate-50 flex items-center justify-center p-4 border-b border-slate-100 relative">
@@ -224,15 +232,16 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
                 {/* 削除ボタン */}
                 <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <IconButton
-                    variant="danger"
-                    size="sm"
-                    label="削除"
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
                     onClick={(e) => handleDelete(e, note.id)}
                     disabled={deletingId === note.id}
+                    className="text-destructive hover:bg-destructive/10"
+                    aria-label="削除"
                   >
                     <Trash2 className="w-4 h-4" />
-                  </IconButton>
+                  </Button>
                 </div>
               </div>
 
@@ -252,22 +261,26 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       </main>
 
       {/* 新規作成モーダル */}
-      <Modal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        title="新規ノートを作成"
-        maxWidth="md"
-      >
-        <form onSubmit={handleCreate} className="flex flex-col gap-5">
-          <Input
-            label="ノートタイトル"
-            placeholder="例: アイデアメモ、授業ノート"
-            value={newTitle}
-            onChange={(e) => setNewTitle(e.target.value)}
-            autoFocus
-          />
+      <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>新規ノートを作成</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleCreate} className="flex flex-col gap-5">
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="note-title-input" className="text-xs font-semibold text-slate-700">
+                ノートタイトル
+              </label>
+              <Input
+                id="note-title-input"
+                placeholder="例: アイデアメモ、授業ノート"
+                value={newTitle}
+                onChange={(e) => setNewTitle(e.target.value)}
+                autoFocus
+              />
+            </div>
 
-          {/* 用紙サイズ選択 */}
+            {/* 用紙サイズ選択 */}
           <div className="flex flex-col gap-1.5">
             <label className="text-xs font-semibold text-slate-600">用紙サイズ</label>
             <div className="grid grid-cols-2 gap-3">
@@ -373,24 +386,25 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => setIsModalOpen(false)}
-            >
-              キャンセル
-            </Button>
-            <Button
-              type="submit"
-              variant="primary"
-              disabled={isSubmitting}
-            >
-              {isSubmitting ? '作成中...' : 'ノートを作成'}
-            </Button>
-          </div>
-        </form>
-      </Modal>
+            <DialogFooter className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setIsModalOpen(false)}
+              >
+                キャンセル
+              </Button>
+              <Button
+                type="submit"
+                variant="default"
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? '作成中...' : 'ノートを作成'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

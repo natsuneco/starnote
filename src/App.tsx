@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNotes } from './hooks/useNotes'
 import { HomeScreen } from './components/home/HomeScreen'
 import { EditorScreen } from './components/editor/EditorScreen'
+import { TooltipProvider } from '@/components/ui/tooltip'
 
 function App() {
   const { notes, loading, createNote, importPdfNote, deleteNote, updateNoteTitle } = useNotes()
@@ -17,24 +18,24 @@ function App() {
 
   const activeNote = notes.find((n) => n.id === activeNoteId)
 
-  if (activeNote) {
-    return (
-      <EditorScreen
-        note={activeNote}
-        onBack={() => setActiveNoteId(null)}
-        onUpdateTitle={(newTitle) => updateNoteTitle(activeNote.id, newTitle)}
-      />
-    )
-  }
-
   return (
-    <HomeScreen
-      notes={notes}
-      onSelectNote={(noteId) => setActiveNoteId(noteId)}
-      onCreateNote={createNote}
-      onImportPdfNote={importPdfNote}
-      onDeleteNote={deleteNote}
-    />
+    <TooltipProvider>
+      {activeNote ? (
+        <EditorScreen
+          note={activeNote}
+          onBack={() => setActiveNoteId(null)}
+          onUpdateTitle={(newTitle) => updateNoteTitle(activeNote.id, newTitle)}
+        />
+      ) : (
+        <HomeScreen
+          notes={notes}
+          onSelectNote={(noteId) => setActiveNoteId(noteId)}
+          onCreateNote={createNote}
+          onImportPdfNote={importPdfNote}
+          onDeleteNote={deleteNote}
+        />
+      )}
+    </TooltipProvider>
   )
 }
 

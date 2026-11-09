@@ -11,7 +11,8 @@ context: |
     2. ジェスチャ操作: 幾何アルゴリズムによる「ぐちゃぐちゃ消去（Scribble to erase）」および「囲んで長押しによるなげなわ選択（Circle to lasso）」。
     3. PDF連携: pdfjs-dist による下敷き表示・閲覧、pdf-lib による手書き注釈合成エクスポート。
     4. ストレージ & 同期: IndexedDB (Dexie.js) によるローカルファースト高速保存、MSAL.js / Microsoft Graph API による OneDrive クラウド同期。
-    5. 技術スタック: React + TypeScript + Vite + Tailwind CSS + vite-plugin-pwa。
+    5. 技術スタック: React + TypeScript + Vite + Tailwind CSS + shadcn/ui + vite-plugin-pwa。
+  - UIコンポーネント開発方針: UI部品は安易に自作せず、導入済みの shadcn/ui (@/components/ui/*) の利用・拡張を徹底すること。新規部品が必要な場合は `npx shadcn@latest add <component>` で追加すること。
 
   【開発・実装原則】
   - 共通化・既存再利用の徹底: 新規作成前に既存実装を調査し、重複定義を避ける。既存機能の小さな拡張で済む場合はそれを最優先する。
